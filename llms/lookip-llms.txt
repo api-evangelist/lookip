@@ -1,0 +1,582 @@
+# Lookip API — Implementation Spec
+
+You are implementing an integration with the **Lookip** IP intelligence API.
+Follow this spec to generate a client (HTTP wrapper, types, error handling,
+credit tracking). Ask the user for the target language/runtime if unclear.
+
+## 1. Overview
+
+- Base URL: `https://api.lookip.io`
+- All authenticated endpoints live under `/v1`.
+- Two **lookup kinds**, chosen by **URL path** — never by a header or body field:
+  - **LITE** — country, continent, ASN, network operator and domain, from a local dataset.
+    **No city and no coordinates** — that is MAX. Sub-5ms p95.
+  - **MAX** — full enrichment. City geo, threats (VPN/proxy/Tor/relay/residential-proxy),
+    hosting/anycast/mobile flags, reverse DNS, mobile carrier.
+- Billing is **prepaid credit**, metered per query. There are no plans, no
+  subscriptions, no monthly quotas, and no per-kind allowances. A single
+  balance funds both kinds.
+- A machine-readable OpenAPI 3.1 description of everything below is at
+  `https://api.lookip.io/openapi.json`. It is generated from the same source as
+  this document, so the two cannot disagree about a route or an error code.
+  Prefer it if your toolchain reads OpenAPI; this file is the prose version.
+
+## 2. Pricing and credit
+
+| Kind | Per query | Per 1,000 queries |
+|------|-----------|-------------------|
+| LITE | 150 µUSD | $0.15 |
+| MAX  | 1,300 µUSD | $1.30 |
+
+- **µUSD (micro-USD)** is the unit the wallet debits in: 1 USD = 1,000,000 µUSD.
+  Integer math only — never use floats for balances. Cents = µUSD / 10,000.
+- New accounts receive **$5 of free credit** on signup, valid for 60 days. The
+  signup grant is spendable on **LITE only**; topped-up credit works on both
+  LITE and MAX.
+- Minimum top-up is $10. Credit has a use-by window that scales with the
+  top-up size: $10–24 → 30 days, $25–49 → 60, $50–99 → 90, $100–249 → 180,
+  $250+ → 365. Credit is consumed oldest-expiry-first.
+- When the balance cannot cover a call, the API returns **402
+  `insufficient_credit`** and does no work. Top up at
+  `https://lookip.io/dashboard/billing`.
+
+## 3. Authentication
+
+The Authorization header is the only accepted scheme:
+
+```http
+Authorization: Bearer LOOKIP_KEY
+```
+
+A `?token=` query parameter used to be accepted as a fallback. It is not any
+more, and a request carrying one returns `unauthorized` 401 with a message
+naming the header. Query strings land in access logs, browser history and the
+Referer header, none of which can be un-sent — so the fallback was an
+instruction to leak the key.
+
+**Keys are stored as a SHA-256 hash.** A key is displayed once, when it is
+created or regenerated, and cannot be retrieved afterwards — not by the
+customer and not by us. A lost key is replaced with Regenerate, which
+invalidates the old one immediately.
+
+**API keys are server-side only.** Never expose one in client JS, a mobile
+app, or a public repo. Revocation from the dashboard is instant.
+
+## 4. Endpoints
+
+| Method | Path | Kind | Auth | Notes |
+|--------|------|------|------|-------|
+| GET  | `/v1/lookup/lite/:ip` | LITE | yes | Country, continent, ASN, org, domain. No city. |
+| POST | `/v1/lookup/lite`     | LITE | yes | Body `{ ip, context? }`. |
+| GET  | `/v1/lookup/max/:ip`  | MAX  | yes | Full enrichment. |
+| POST | `/v1/lookup/max`      | MAX  | yes | Body `{ ip, context? }`. |
+| GET  | `/v1/lookup/me`       | MAX  | yes | Enriches the caller's own IP. |
+| POST | `/v1/batch/lite`      | LITE | yes | Body `{ ips: [...] }`, 1–100 entries. |
+| POST | `/v1/batch/max`       | MAX  | yes | Body `{ ips: [...] }`, 1–100 entries. |
+| GET  | `/v1/asn/:asn`        | —    | no  | Public ASN record. Free. |
+| GET  | `/v1/asn`             | —    | no  | Public ASN search. Free. |
+| GET  | `/health`             | —    | no  | `{ ok, ts }`. |
+| GET  | `/`                   | —    | no  | Service index: name, version, endpoint list. |
+| GET  | `/openapi.json`       | —    | no  | This API as OpenAPI 3.1. |
+
+Legacy aliases still accepted, all resolving to MAX: `/v1/lookup/:ip`,
+`/v1/lookup`, `/v1/lookup/full/:ip`, `/v1/lookup/full`, `/v1/batch`,
+`/v1/batch/full`. Generate new clients against the explicit `lite`/`max`
+paths; do not use the aliases.
+
+### Batch semantics
+
+Body: `{ "ips": ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] }` (max 100).
+
+The call is debited **up front**, at the rate for the kind in the path, for the
+**distinct resolvable** addresses only. Malformed entries and bogons are
+classified out before the wallet is touched, and a repeated address is charged
+once — the response is keyed by IP, so duplicates collapse to one entry anyway.
+If the balance cannot cover the batch the call is rejected with 402 and nothing
+is served — batches are never partially billed or partially fulfilled at the
+billing layer.
+
+The response is an object **keyed by IP**, not an array. Per-IP failures are
+reported inside that object and do not fail the call:
+
+```json
+{
+  "8.8.8.8":   { "ip": "8.8.8.8", "location": { }, "network": { }, "lastUpdated": "…" },
+  "10.0.0.1":  { "ip": "10.0.0.1", "bogon": true },
+  "not-an-ip": { "error": "invalid_ip" },
+  "1.2.3.4":   { "error": "upstream_error" }
+}
+```
+
+### Public ASN endpoints (no key, no credit)
+
+```http
+GET /v1/asn/15169
+GET /v1/asn?q=google&country=US&limit=50
+```
+
+`:asn` accepts `15169` or `AS15169`. Search params: `q` (matches name,
+domain, or number), `country` (ISO-3166 alpha-2), `limit` (1–100, default 50).
+Single returns one record; search returns `{ "items": [...] }`. A search row is
+the same record shape, `datasetVersion` included, so an ingest can record how
+current each row was without re-fetching it. A missing ASN is `404 not_found`;
+an unparseable one is `400 invalid_request`.
+
+```json
+{
+  "asn": "AS15169",
+  "number": 15169,
+  "name": "Google LLC",
+  "domain": "google.com",
+  "country": "US",
+  "prefixCount": 6079,
+  "datasetVersion": "2026-08-13T13:37:50.000Z"
+}
+```
+
+**`prefixCount`** — IPv4 /24 blocks attributed to this AS by a sampled sweep of routable IPv4 space: one address per /24 is probed, and the blocks that answer are counted. It is a size proxy — sampled and lossy — and it is not a count of announced BGP prefixes. On large networks the two differ by an order of magnitude, so do not read it as a route count.
+
+## 5. Response shapes (stable per kind)
+
+Every field except `ip` is optional and may be absent when the data source
+has no signal. Treat missing and `null` identically; never index blindly.
+
+### LITE
+
+```json
+{
+  "ip": "8.8.8.8",
+  "location": {
+    "country": "United States",
+    "countryCode": "US",
+    "continent": "North America",
+    "continentCode": "NA"
+  },
+  "network": {
+    "asn": "AS15169",
+    "organization": "Google LLC",
+    "domain": "google.com"
+  },
+  "lastUpdated": "2026-08-14T09:45:16.269Z",
+  "datasetUpdatedAt": "2026-08-13T13:37:50.000Z"
+}
+```
+
+### MAX
+
+```json
+{
+  "ip": "8.8.8.8",
+  "hostname": "dns.google",
+  "location": {
+    "city": "Mountain View",
+    "region": "California",
+    "regionCode": "CA",
+    "country": "United States",
+    "countryCode": "US",
+    "continent": "North America",
+    "continentCode": "NA",
+    "latitude": 37.4056,
+    "longitude": -122.0775,
+    "timezone": "America/Los_Angeles",
+    "postalCode": "94043",
+    "dmaCode": "807",
+    "geonameId": "5375480",
+    "accuracyRadiusKm": 50,
+    "geoUpdatedAt": "2026-01-04"
+  },
+  "network": {
+    "asn": "AS15169",
+    "organization": "Google LLC",
+    "domain": "google.com",
+    "type": "hosting",
+    "asnUpdatedAt": "2021-05-01"
+  },
+  "threats": {
+    "service": "NordVPN",
+    "lastSeen": "2026-05-10",
+    "recentActivityPct": 85,
+    "isProxy": false,
+    "isRelay": false,
+    "isTor": false,
+    "isVpn": false,
+    "isResidentialProxy": false
+  },
+  "flags": {
+    "isAnonymous": false,
+    "isAnycast": true,
+    "isHosting": true,
+    "isMobile": false,
+    "isSatellite": false,
+    "isResidentialProxy": false
+  },
+  "lastUpdated": "2026-08-14T09:45:16.269Z"
+}
+```
+
+`threats.service`, `threats.lastSeen` and `threats.recentActivityPct` are
+shown populated so the shape is visible. They are present only when the
+address is a detected anonymizer — 8.8.8.8 returns `threats` with the five
+booleans and nothing else. Do not make them required in a generated type.
+
+A missing boolean means we hold no data on it. It does **not** mean the
+answer is `false`. We never turn "no signal" into `false`, so code that
+screens for anonymisers should treat an absent `threats.isTor` as "unknown"
+and decide its own policy, not as "not Tor".
+
+Anything we work out ourselves rather than read from privacy data is named
+by dotted path in `derivedFields`:
+
+```json
+{ "ip": "1.2.3.4", "threats": { "isVpn": true }, "derivedFields": ["threats.isVpn"] }
+```
+
+The key is omitted entirely when nothing was computed, which is the usual
+case. The invariant is exact: **a field present and not named in
+`derivedFields` came from upstream, not from us.**
+
+Most listed fields are inferred from the network's registered organisation
+name and are best-effort — and a name only ever implies a positive, so a
+name matching nothing leaves the field unset rather than `false`. The one
+exception is `flags.isAnonymous`, which is deduced from booleans upstream
+did send and may therefore legitimately be `false`; it is as reliable as
+the fields it is computed from.
+
+`derivedFields` is empty on the large majority of MAX responses. Do not
+build a client that expects it, and do not treat its presence as routine:
+if it names a `threats.*` boolean, that value is a guess from a network
+name, not a measurement.
+
+### Bogon
+
+Reserved and non-routable addresses short-circuit on both kinds. Recognised
+locally, and therefore free:
+
+- **IPv4** — `0/8`, `10/8`, `100.64/10` (CGNAT), `127/8`,
+  `169.254/16`, `172.16/12`, `192.0.0/24`, `192.0.2/24` (TEST-NET-1),
+  `192.88.99/24`, `192.168/16`, `198.18/15` (benchmarking),
+  `198.51.100/24` (TEST-NET-2), `203.0.113/24` (TEST-NET-3), `224/4`
+  (multicast) and `240/4` (including `255.255.255.255`) — plus every
+  `::ffff:`-mapped spelling of them.
+- **IPv6** — `::`, `::1`, `100::/64`, `2001:db8::/32`, `fc00::/7`,
+  `fe80::/10`, `fec0::/10` and `ff00::/8`.
+
+6to4 (`2002::/16`), Teredo (`2001::/32`) and NAT64 (`64:ff9b::/96`) are
+deliberately **not** bogons — each wraps a routable IPv4, so they are resolved
+and billed like any other address.
+
+That list is what we recognise, not every special-purpose range IANA has ever
+registered. Rarer ones (for example `2001:2::/48`, `3fff::/20`,
+`2001:10::/28`, `5f00::/16`) are still sent upstream, come back as bogon,
+and **are billed**. Filter those client-side if you care about the spend.
+
+```json
+{
+  "ip": "10.0.0.1",
+  "bogon": true
+}
+```
+
+This **costs nothing**, on the single-lookup endpoints and inside a batch alike —
+no credit is debited and no credit headers are set. A batch is debited only for
+the addresses it actually resolves: entries that are malformed
+(`{ "error": "invalid_ip" }`) or bogon are classified out before the wallet is
+touched, so the charge is the number of **distinct resolvable** addresses, not
+the length of the array.
+
+Branch on `bogon === true` before reading `location` or `network`.
+
+## 6. Response headers
+
+Every response that **debited credit** carries exactly these three:
+
+- `X-Lookup-Kind` — `LITE` or `MAX`.
+- `X-Credit-Debit-MicroUsd` — µUSD this call cost, as a decimal string.
+- `X-Credit-Balance-MicroUsd` — µUSD remaining after the debit, as a decimal string.
+
+Both amounts are **strings holding integers that can exceed 2^53** — parse them
+with BigInt / int64 / Decimal, never `Number`/`float`.
+
+There are no plan or quota headers. `X-Plan`, `X-Quota-Limit`, and
+`X-Quota-Used` do not exist; if you saw them in an older spec, ignore them.
+
+Bogon responses and every error response omit all three. Nothing is debited on
+a rejection, and a charge already taken for a lookup we then failed to serve is
+reversed before the response is sent — so an error response never leaves you
+out of pocket. On a partly-failed batch the header reports the NET charge,
+after the reversal for the entries that errored.
+Poll the balance from these headers instead of an extra round-trip, and warn
+the operator when it approaches zero.
+
+## 7. Optional `context` body (POST single-lookup endpoints only)
+
+Tag a request with surrounding session info — visible only inside the account's
+own dashboard usage logs. **Context is never forwarded to any third party.**
+
+| Field | Type / limit | Purpose |
+|-------|--------------|---------|
+| `userAgent` | string ≤2000 | Originating UA string of the end user. |
+| `email` | string ≤320 | End-user email for log correlation. |
+| `username` | string ≤120 | Internal username/handle. |
+| `firstName`, `lastName` | string ≤120 | Personal name fields. |
+| `phone` | string ≤40 | E.164 phone number. |
+| `address` ≤500, `city`/`region` ≤120, `country` (2 chars), `postal` ≤20 | string | Claimed address, for fraud checks against IP geo. |
+| `note` | string | Free-form short string (order id, ticket). |
+| `tags` | string[] | Labels for dashboard filtering. |
+| `extra` | object of string/number/boolean/null | Anything else. Scalars only; strings ≤2000. |
+
+Oversized or wrongly-typed context is rejected with `400 invalid_request` —
+validate lengths client-side before sending.
+
+```bash
+curl -X POST https://api.lookip.io/v1/lookup/max \
+  -H "Authorization: Bearer LOOKIP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip": "8.8.8.8",
+    "context": {
+      "userAgent": "Mozilla/5.0 …",
+      "email": "user@example.com",
+      "username": "alice",
+      "note": "checkout #4821",
+      "tags": ["signup", "trial"]
+    }
+  }'
+```
+
+## 8. Errors
+
+Standard shape — an `error.code` plus a human-readable `error.message`:
+
+```json
+{ "error": { "code": "insufficient_credit", "message": "…" } }
+```
+
+| Code | HTTP | Meaning | Retry? |
+|------|------|---------|--------|
+| `invalid_request` | 400 | Malformed body, bad `context`, bad batch array, unparseable ASN. | No |
+| `invalid_ip` | 400 | Not a valid IPv4/IPv6. | No |
+| `unauthorized` | 401 | Missing, invalid, or revoked key. | No |
+| `insufficient_credit` | 402 | Balance too low to serve the call. Nothing was debited or served. | No — top up first |
+| `insufficient_credit_for_max` | 402 | The balance cannot fund a MAX lookup: the signup grant is spendable on LITE only. Nothing was debited or served. | No — top up first |
+| `not_found` | 404 | On `/v1/asn*`: no such ASN. On a MAX lookup: upstream holds no record for the address; the charge is reversed. | No |
+| `rate_limited` | 429 | Per-key cap of 50 requests/second exceeded — or upstream rate-limited a MAX lookup, in which case the status is theirs. No credit spent either way. | Yes, jittered backoff |
+| `lite_db_unavailable` | 503 | LITE dataset still loading (cold start, <30s). No credit spent. | Yes |
+| `service_busy` | 503 | The database was briefly unable to start a transaction. **Nothing was charged** — the debit is the transaction that did not start. | Yes, after `Retry-After` (1s) |
+| `auth_failed` | 502 | **Not your key.** A MAX lookup could not authenticate to our upstream data provider — our credential, not yours. Keep the key, back off and retry. Nothing is charged. | Yes, backoff |
+| `upstream_error` | 502 | MAX enrichment failed. **The status mirrors the upstream response when it sent one, so any 4xx or 5xx can arrive with this code** — branch on `error.code`, never on the status alone. The charge is reversed automatically. | Yes, backoff |
+| `internal_error` | 500 | Unhandled server fault. | Yes, backoff |
+
+Three of these are re-emitted from the upstream call rather than raised by us —
+the upstream flavours of `not_found`, `rate_limited` and `upstream_error` — and
+they carry the upstream's status. That is why a MAX lookup can answer with a
+status the table's "HTTP" column does not list.
+
+`auth_failed` is the exception, and the exception is the point: it is raised
+upstream but the status is **ours**. Mirroring the upstream 401 or 403 would put
+our own credential failure behind the one status that means "your key is dead",
+so a client branching on status would discard a working key. It is a 502.
+
+**From the application, a 401 carries `unauthorized` and nothing else** — your
+key is missing, invalid, or revoked — and the application never answers 403.
+
+The edge in front of it does. Our origin lock and the WAF both answer **403** to
+a request they refuse, and those responses are **HTML, not JSON**. So keep a 403
+branch, and never assume a non-2xx body parses as JSON: a response with no
+`error.code` never reached the API and no advice in this table applies to it.
+
+The two 402 codes uniquely carry a `credit` object so a client can tell the
+operator exactly how short it is. `insufficient_credit_for_max` additionally
+carries `eligibleMicroUsd`/`eligibleCents` — what the wallet can still spend on
+the requested kind; the gap between that and the balance is the LITE-only
+signup grant, and the fix is a top-up, not a bigger grant:
+
+```json
+{
+  "error": { "code": "insufficient_credit", "message": "…" },
+  "credit": {
+    "balanceMicroUsd": "420",
+    "needMicroUsd": "1300",
+    "balanceCents": 0,
+    "needCents": 0,
+    "kind": "MAX"
+  }
+}
+```
+
+The `*MicroUsd` fields are exact strings; the `*Cents` fields are a rounded
+convenience view and **must not** be used for reconciliation.
+
+There is no `quota_exhausted`, `no_active_plan`, or `bucket_disabled`. Running
+out of money is always a 402 — `insufficient_credit`, or
+`insufficient_credit_for_max` when the balance is real but the signup grant
+cannot fund MAX — never a 429.
+
+## 9. Rate limits
+
+- **50 requests/second per API key**, shared across every
+  **authenticated** endpoint and both kinds. Over the cap returns
+  `429 rate_limited` with no credit spent.
+- **100 requests/second per calling address**, across all of
+  `/v1` including the public ASN endpoints. It is applied **before** your key is
+  checked, so it bounds requests carrying no key or a rejected one too. It sits
+  deliberately above the per-key cap and is never what stops a single key from
+  reaching 50/second. Same `429 rate_limited`, no credit
+  spent. Your address is taken from the edge, not from a header you send.
+- The limiter is a fixed one-second window, so it can reject a burst that
+  straddles a second boundary. Retry with jittered backoff, not a tight loop.
+- A batch call counts as **one** request against the rate limit but debits
+  credit for every **resolvable** IP in it. Batching is the correct way to raise
+  throughput.
+
+## 10. Implementation requirements
+
+When you generate the client, it MUST:
+
+1. **Read the API key from an environment variable** (e.g. `LOOKIP_KEY`) —
+   never hardcode it. Send it in the `Authorization` header, not the query string.
+2. **Validate the IP locally** before calling. Reject empties early.
+3. **Expose the credit headers** to the caller, parsed as BigInt/int64 —
+   never as a float — so they can react to a draining balance.
+4. **Distinguish recoverable from fatal**:
+   - Retry with jittered backoff: `rate_limited`, `lite_db_unavailable`,
+     `service_busy`, `upstream_error`, `auth_failed`, `internal_error`, and any
+     5xx. `service_busy` sends `Retry-After`; honour it as a floor. Retrying
+     is safe for the balance: the failed attempt's charge is reversed, so a
+     retry costs one lookup, not two.
+   - Never retry: `invalid_request`, `invalid_ip`, `unauthorized`,
+     `insufficient_credit`, `not_found`. Retrying `insufficient_credit` just
+     burns requests — surface it to the operator as "top up".
+   - **Branch on `error.code`, not on the HTTP status.** 502 is
+     `upstream_error` or `auth_failed` — both ours, both retryable, neither a
+     reason to touch the key — and `upstream_error` can additionally arrive
+     with whatever status the upstream sent, including a 4xx. 401 is
+     `unauthorized` and nothing else: stop and re-key.
+5. **Type the response** with the exact shapes above (Zod / Pydantic /
+   TypeScript interface), with every field but `ip` optional, and handle
+   `bogon: true` as its own branch.
+6. **Expose LITE and MAX as separate methods** so callers pick the kind
+   explicitly. Never silently "auto-upgrade" a LITE call to MAX — that is a
+   ~8.7× price increase the caller did not ask for.
+7. **Use the batch endpoints** for arrays of IPs — never N calls to the single
+   endpoint. Chunk into 100s. Parse the response as a map keyed by IP and
+   check each value for an `error` field.
+8. **Set sane HTTP timeouts** — 5s for LITE, 10s for MAX (a cold MAX lookup
+   makes an upstream call; a cached one is fast).
+9. **Run server-side only.** No browser fetching; the key must not ship to a
+   client. Browsers refuse it for you: `Authorization` is not in the API's
+   cross-origin allow list, so a preflight from another origin fails and
+   browser code that sends the key cannot work. That is a guard rail for
+   compliant browsers and nothing else — it does not protect a key that has
+   already shipped in a bundle, nor one used from curl, a server, a native app
+   or an extension. Never present it to an operator as containment; a leaked
+   key is leaked and must be rotated. The public ASN endpoints and
+   `/openapi.json` take no key and remain browser-readable.
+
+## 11. Reference: minimal fetch
+
+```ts
+const r = await fetch("https://api.lookip.io/v1/lookup/max/8.8.8.8", {
+  headers: { Authorization: `Bearer ${process.env.LOOKIP_KEY}` },
+});
+if (r.status === 402) throw new Error("out of credit — top up at lookip.io/dashboard/billing");
+if (!r.ok) throw new Error(`lookup failed: ${r.status}`);
+
+const balanceMicroUsd = BigInt(r.headers.get("X-Credit-Balance-MicroUsd") ?? "0");
+const data = await r.json();
+if (data.bogon) return null;
+```
+
+## 12. The keyless CLI surface (`curl https://lookip.io/<ip>`)
+
+A different host and a different product from everything above.
+`lookip.io` — not `api.lookip.io` — answers CLI user-agents with flat JSON
+instead of the marketing page, so `curl https://lookip.io/1.1.1.1` and
+`curl https://lookip.io` (the caller's own address) work with **no key and
+no credit**. It is metered by a per-day allowance on the calling address, not
+by the wallet. Never send `LOOKIP_KEY` to it.
+
+The body is the flat curl shape, not the nested one in section 5:
+
+```json
+{
+  "ip": "1.1.1.1",
+  "hostname": "one.one.one.one",
+  "city": "Sydney",
+  "region": "New South Wales",
+  "country": "AU",
+  "loc": "-33.8688,151.2093",
+  "postal": "2000",
+  "timezone": "Australia/Sydney",
+  "org": "AS13335 Cloudflare, Inc.",
+  "tier": "max"
+}
+```
+
+**This surface can answer with less than it was asked for, and it always says
+so.** Once the day's allowance is spent it falls back to country and network
+only; on a server whose local dataset has not mounted it can return the
+address and nothing else. Two fields make that unambiguous:
+
+- `tier` — `"max"` (full record) or `"lite"` (reduced). **Always present**,
+  so a client can fail closed on `tier !== "max"` instead of guessing.
+- `degraded` — present **only** when something was withheld, as
+  `{ reason, message, resetAt?, retryAfterSeconds? }`. **Branch on this
+  field**, not on `tier` alone: a private range is a complete `lite` answer
+  and must never be retried.
+
+```json
+{
+  "ip": "1.1.1.1",
+  "country": "AU",
+  "org": "AS13335 Cloudflare, Inc.",
+  "tier": "lite",
+  "degraded": {
+    "reason": "daily_limit_reached",
+    "message": "Daily lookup allowance spent. …",
+    "resetAt": "2026-08-15T00:00:00.000Z"
+  }
+}
+```
+
+Branch on `degraded.reason`. Never on `degraded.message`, which is a
+sentence for a human running the command once by hand.
+
+| `reason` | HTTP | Meaning | Retry? |
+|--------|------|---------|--------|
+| `daily_limit_reached` | 200 | The day's allowance is spent. The record is real but reduced. `resetAt` is when it refills. | Not before `resetAt` |
+| `lite_db_unavailable` | 503 | The local dataset is not mounted on that server. The body carries the address and nothing else. | Yes, after `retryAfterSeconds` |
+| `unmetered` | 200 | The server could not identify the caller, so nothing was spent. Reduced record. | Yes, after `retryAfterSeconds` |
+
+A reduced record keeps its **200** on purpose: it is a complete, correct,
+smaller answer, and a `429` would be read as "back off and retry" against a
+counter that does not move until the next UTC midnight. The **503** is the
+opposite case — there is no answer in the body, the fault is ours, and a
+client that stops on a non-2xx is doing exactly the right thing.
+
+The same signal is on the response headers, so a client can branch without
+reading the body at all:
+
+```http
+X-Lookip-Tier: lite
+X-Lookip-Degraded: daily_limit_reached
+X-Lookip-Daily-Limit: 50
+X-Lookip-Daily-Remaining: 0
+X-Lookip-Daily-Reset: 2026-08-15T00:00:00.000Z
+```
+
+`X-Lookip-Degraded` is absent on a complete answer. The three daily-counter
+headers are absent when there was nobody to meter, because `0` of `0` reads
+as "you spent it all". `Retry-After` accompanies the 503.
+
+**A client for this surface MUST NOT record the absence of `city`, `loc`,
+`postal` or `timezone` as fact while `degraded` is present.** That is the
+whole reason those two fields exist: without them a reduced answer and an
+address we simply hold no city for are the same 200 with the same shape, and a
+script writes nulls into its own dataset and never finds out.
+
+---
+
+Now: generate a complete, idiomatic client for the language/runtime the user
+specifies. Default to TypeScript if unspecified. Include types, error classes,
+retry logic, credit-header parsing, and a short usage example.

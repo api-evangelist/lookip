@@ -1,0 +1,51 @@
+aid: lookip
+name: Lookip
+description: >-
+  Lookip is an IP and domain intelligence API — geolocation, network and ASN, hosting and proxy
+  detection, and related lookups over a single authenticated surface. The contract is an OpenAPI
+  3.1.1 document of 18 paths and 24 schemas served from api.lookip.io with bearer authentication.
+type: Index
+url: https://raw.githubusercontent.com/api-evangelist/lookip/refs/heads/main/apis.yml
+created: '2026-08-26'
+modified: '2026-08-26'
+specificationVersion: '0.23'
+tags: [IP Intelligence, Geolocation, Networking, Security, Data]
+tags_raw: [ip lookup, geolocation, asn, proxy detection]
+apis:
+- aid: lookip:lookip-api
+  name: Lookip API
+  description: >-
+    IP and domain intelligence — geolocation, ASN and network, hosting and proxy signals.
+    18 operations, 24 schemas, bearer authentication.
+  humanURL: https://lookip.io/docs
+  baseURL: https://api.lookip.io
+  tags: [IP Intelligence, Geolocation, Networking]
+  properties:
+  - {type: OpenAPI, url: openapi/lookip-api-openapi.yml}
+  - {type: APIReference, url: 'https://api.lookip.io/openapi.json'}
+  - {type: Documentation, url: 'https://lookip.io/docs'}
+  - {type: GettingStarted, url: 'https://lookip.io/docs#quick-start'}
+  - {type: Authentication, url: 'https://lookip.io/docs#authentication'}
+  - {type: ErrorCodes, url: 'https://lookip.io/docs#errors'}
+  - {type: RateLimits, url: 'https://lookip.io/docs#rate-limits'}
+common:
+- {type: APIsJSON, url: well-known/lookip-provider-apis.json}
+- {type: LLMsTxt, url: llms/lookip-llms.txt}
+- {type: Website, url: 'https://lookip.io'}
+- {type: Plans, url: 'https://lookip.io/pricing'}
+- {type: Signup, url: 'https://lookip.io/signup'}
+- {type: TermsOfService, url: 'https://lookip.io/legal/terms'}
+- {type: PrivacyPolicy, url: 'https://lookip.io/legal/privacy'}
+maintainers:
+- {FN: Lookip, email: hi@lookip.io, url: 'https://lookip.io'}
+x-provenance:
+  added: '2026-08-26'
+  method: searched
+  source: https://lookip.io/.well-known/apis.json
+  note: >-
+    Submitted via apis.io/add on 2026-08-26 and auto-published by the gate at rating 71
+    (exemplar). The declared APIs.json URL is CORRECT — /.well-known/apis.json returns
+    application/json against a control that returns a real 404 — and every property it declares
+    was fetched. OpenAPI 3.1.1, 18 paths, 24 schemas, bearer auth, served from api.lookip.io.
+    Their apis.json declares specificationVersion 0.19, some revisions behind current. Recorded,
+    not corrected: it is their document.

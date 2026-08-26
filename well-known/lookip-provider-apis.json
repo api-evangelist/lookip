@@ -1,0 +1,114 @@
+{
+  "aid": "io.lookip",
+  "name": "Lookip",
+  "type": "Index",
+  "description": "IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.",
+  "image": "https://lookip.io/android-chrome-512x512.png",
+  "url": "https://lookip.io/.well-known/apis.json",
+  "created": "2026-08-14",
+  "modified": "2026-08-14",
+  "specificationVersion": "0.19",
+  "tags": [
+    "IP",
+    "IP Address",
+    "Geolocation",
+    "ASN",
+    "VPN Detection",
+    "Proxy Detection",
+    "Tor",
+    "Threat Intelligence",
+    "Fraud Prevention"
+  ],
+  "apis": [
+    {
+      "aid": "io.lookip:api",
+      "name": "Lookip API",
+      "description": "IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.",
+      "image": "https://lookip.io/android-chrome-512x512.png",
+      "humanURL": "https://lookip.io/docs",
+      "baseURL": "https://api.lookip.io",
+      "tags": [
+        "IP",
+        "IP Address",
+        "Geolocation",
+        "ASN",
+        "VPN Detection",
+        "Proxy Detection",
+        "Tor",
+        "Threat Intelligence",
+        "Fraud Prevention"
+      ],
+      "properties": [
+        {
+          "type": "OpenAPI",
+          "url": "https://api.lookip.io/openapi.json",
+          "name": "OpenAPI 3.1"
+        },
+        {
+          "type": "Documentation",
+          "url": "https://lookip.io/docs",
+          "name": "API Documentation"
+        },
+        {
+          "type": "GettingStarted",
+          "url": "https://lookip.io/docs#quick-start",
+          "name": "Quick Start"
+        },
+        {
+          "type": "Authentication",
+          "url": "https://lookip.io/docs#authentication",
+          "name": "Authentication"
+        },
+        {
+          "type": "ErrorCodes",
+          "url": "https://lookip.io/docs#errors",
+          "name": "Error Codes"
+        },
+        {
+          "type": "RateLimits",
+          "url": "https://lookip.io/docs#rate-limits",
+          "name": "Rate Limits"
+        },
+        {
+          "type": "Pricing",
+          "url": "https://lookip.io/pricing",
+          "name": "Pricing"
+        },
+        {
+          "type": "Signup",
+          "url": "https://lookip.io/signup",
+          "name": "Sign Up"
+        },
+        {
+          "type": "TermsOfService",
+          "url": "https://lookip.io/legal/terms",
+          "name": "Terms of Service"
+        },
+        {
+          "type": "PrivacyPolicy",
+          "url": "https://lookip.io/legal/privacy",
+          "name": "Privacy Policy"
+        },
+        {
+          "type": "X-LlmsTxt",
+          "url": "https://lookip.io/llms.txt",
+          "name": "llms.txt"
+        }
+      ],
+      "contact": [
+        {
+          "FN": "Lookip",
+          "email": "hi@lookip.io",
+          "url": "https://lookip.io"
+        }
+      ]
+    }
+  ],
+  "maintainers": [
+    {
+      "FN": "Lookip",
+      "email": "hi@lookip.io",
+      "url": "https://lookip.io"
+    }
+  ]
+}

@@ -1,0 +1,4052 @@
+openapi: 3.1.1
+info:
+  title: Lookip API
+  version: 1.0.0
+  summary: IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name
+    the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.
+  description: 'IP intelligence over plain HTTP GET and POST. Two lookup kinds, chosen by URL path and
+    never by a header or body field:
+
+
+    - **LITE** — geolocation and ASN from our local dataset. Sub-5ms p95.
+
+    - **MAX** — full enrichment: city geolocation, VPN/proxy/Tor/relay/residential-proxy detection, hosting
+    and anycast flags, reverse DNS, mobile carrier.
+
+
+    ## Billing
+
+
+    Prepaid credit, metered per query. No plans, no subscriptions, no monthly quotas — one balance funds
+    both kinds. Amounts are in µUSD (micro-USD); 1 USD = 1,000,000 µUSD.
+
+
+    | Kind | Per query | Per 1,000 |
+
+    |------|-----------|-----------|
+
+    | LITE | 150 µUSD | $0.15 |
+
+    | MAX | 1,300 µUSD | $1.30 |
+
+
+    Every response that debited credit carries `X-Lookup-Kind`, `X-Credit-Debit-MicroUsd` and `X-Credit-Balance-MicroUsd`.
+    Both amounts are decimal strings holding integers that can exceed 2^53 — parse them as BigInt or int64,
+    never as a float. Bogon and error responses carry none of the three, because nothing was charged.
+
+
+    ## Limits
+
+
+    50 requests/second per API key, shared across every authenticated endpoint and both kinds. A batch
+    call counts as one request against the rate limit but debits for every resolvable address in it.
+
+
+    A second ceiling of 100 requests/second applies per calling address across all of `/v1`, including
+    the public ASN endpoints. It sits in front of authentication, so it also bounds requests that carry
+    no key or a rejected one. It is deliberately above the per-key cap and cannot be what stops a single
+    key from reaching 50/second. Both refusals are `rate_limited` with status 429 and neither spends credit.
+
+
+    The public ASN endpoints need no key and are not metered — the ceiling above is a rate, not a charge.
+
+
+    ## Errors
+
+
+    Every error body is `{ "error": { "code", "message" } }`. Retry `rate_limited`, `lite_db_unavailable`,
+    `service_busy`, `upstream_error`, `internal_error` and any 5xx with jittered backoff; never retry
+    `invalid_request`, `invalid_ip`, `unauthorized`, `insufficient_credit` or `insufficient_credit_for_max`.
+    A charge taken for a lookup we then failed to serve is reversed before the response is sent, so a
+    retry costs one lookup and not two.
+
+
+    A longer implementation spec written for code-generating agents is at https://lookip.io/llms.txt.'
+  termsOfService: https://lookip.io/legal/terms
+  contact:
+    name: Lookip
+    url: https://lookip.io/docs
+    email: hi@lookip.io
+externalDocs:
+  description: API documentation
+  url: https://lookip.io/docs
+servers:
+- url: https://api.lookip.io
+  description: Production
+security:
+- bearerAuth: []
+tags:
+- name: Lookup
+  description: Single-address lookups.
+- name: Batch
+  description: Up to 100 addresses per call.
+- name: ASN
+  description: Public ASN directory. No key, no credit.
+- name: Service
+  description: Service index, liveness and this document.
+paths:
+  /:
+    get:
+      tags:
+      - Service
+      operationId: getServiceIndex
+      summary: Service Index
+      description: Service name, version, and the canonical endpoint list.
+      security: []
+      responses:
+        '200':
+          description: Service index.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceIndex'
+              examples:
+                index:
+                  summary: The service index.
+                  value:
+                    service: lookip-api
+                    version: '1.0'
+                    docs: https://lookip.io/docs
+                    openapi: /openapi.json
+                    endpoints:
+                    - /v1/lookup/lite/:ip
+                    - /v1/lookup/max/:ip
+                    - /v1/lookup/me
+                    - /v1/batch/lite
+                    - /v1/batch/max
+                    - /v1/asn/:asn
+                    - /v1/asn?q=&country=
+                    - /openapi.json
+  /health:
+    get:
+      tags:
+      - Service
+      operationId: getHealth
+      summary: Liveness Probe
+      description: 'Always 200 with `ok: true` while the process is answering. `ok` is liveness and never
+        depends on `lite`: a process whose Lite dataset failed to load is still alive and still serves
+        every other endpoint, and reporting that in the status code would stop a container from ever becoming
+        healthy. When `lite.loaded` is false every LITE lookup on this process answers 503 `lite_db_unavailable`,
+        and `lite.datasetUpdatedAt` is null.'
+      security: []
+      responses:
+        '200':
+          description: The service is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              examples:
+                up:
+                  summary: The service is up and the Lite dataset is in memory.
+                  value:
+                    ok: true
+                    ts: 1786726485972
+                    lite:
+                      loaded: true
+                      datasetUpdatedAt: '2026-08-22T04:11:07.000Z'
+  /openapi.json:
+    get:
+      tags:
+      - Service
+      operationId: getOpenApiDocument
+      summary: OpenAPI Document
+      description: This document.
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI 3.1 description of this API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenApiDocument'
+              examples:
+                head:
+                  summary: The first fields of this document. The real body carries `paths` and `components`.
+                  value:
+                    openapi: 3.1.1
+                    info:
+                      title: Lookip API
+                      version: 1.0.0
+                      summary: IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or
+                        IPv6 address — we name the anonymising service, not just flag it. Prepaid credit,
+                        metered per query, no subscription.
+                    servers:
+                    - url: https://api.lookip.io
+                      description: Production
+  /v1/lookup/lite/{ip}:
+    get:
+      tags:
+      - Lookup
+      operationId: lookupLite
+      summary: LITE Lookup
+      description: 'Geolocation and ASN from our local dataset. Reserved and non-routable addresses answer
+        `{ ip, bogon: true }` free of charge and set no credit headers.'
+      parameters:
+      - name: ip
+        in: path
+        required: true
+        description: IPv4 or IPv6 address.
+        schema:
+          type: string
+        example: 8.8.8.8
+      responses:
+        '200':
+          description: A LITE record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiteRecord'
+              examples:
+                record:
+                  summary: A LITE record.
+                  value:
+                    ip: 8.8.8.8
+                    location:
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                    datasetUpdatedAt: '2026-08-13T13:37:50.000Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`lite_db_unavailable` — LITE dataset still loading (cold start, under 30s). No
+            credit spent. `service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                lite_db_unavailable:
+                  summary: LITE dataset still loading (cold start, under 30s). No credit spent.
+                  value:
+                    error:
+                      code: lite_db_unavailable
+                      message: LITE dataset still loading (cold start, under 30s). No credit spent.
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/lookup/lite:
+    post:
+      tags:
+      - Lookup
+      operationId: lookupLitePost
+      summary: LITE Lookup With Context
+      description: Same answer as the GET form, with an optional `context` object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupRequest'
+            example:
+              ip: 8.8.8.8
+              context:
+                note: 'checkout #4821'
+                tags:
+                - signup
+      responses:
+        '200':
+          description: A LITE record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiteRecord'
+              examples:
+                record:
+                  summary: A LITE record.
+                  value:
+                    ip: 8.8.8.8
+                    location:
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                    datasetUpdatedAt: '2026-08-13T13:37:50.000Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6. `invalid_request`
+            — Malformed body, invalid context, bad batch array, or an unparseable ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`lite_db_unavailable` — LITE dataset still loading (cold start, under 30s). No
+            credit spent. `service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                lite_db_unavailable:
+                  summary: LITE dataset still loading (cold start, under 30s). No credit spent.
+                  value:
+                    error:
+                      code: lite_db_unavailable
+                      message: LITE dataset still loading (cold start, under 30s). No credit spent.
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/lookup/max/{ip}:
+    get:
+      tags:
+      - Lookup
+      operationId: lookupMax
+      summary: MAX Lookup
+      description: 'Full enrichment. Reserved and non-routable addresses answer `{ ip, bogon: true }`
+        free of charge and set no credit headers.'
+      parameters:
+      - name: ip
+        in: path
+        required: true
+        description: IPv4 or IPv6 address.
+        schema:
+          type: string
+        example: 8.8.8.8
+      responses:
+        '200':
+          description: A MAX record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/lookup/max:
+    post:
+      tags:
+      - Lookup
+      operationId: lookupMaxPost
+      summary: MAX Lookup With Context
+      description: Same answer as the GET form, with an optional `context` object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupRequest'
+            example:
+              ip: 8.8.8.8
+              context:
+                note: 'checkout #4821'
+                tags:
+                - signup
+      responses:
+        '200':
+          description: A MAX record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6. `invalid_request`
+            — Malformed body, invalid context, bad batch array, or an unparseable ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/lookup/me:
+    get:
+      tags:
+      - Lookup
+      operationId: lookupMe
+      summary: Look Up The Caller
+      description: A MAX lookup of the caller's own address, billed at the MAX rate.
+      responses:
+        '200':
+          description: A MAX record for the calling address.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/lookup/full/{ip}:
+    get:
+      tags:
+      - Lookup
+      operationId: lookupFullAlias
+      summary: MAX Lookup (Legacy Alias)
+      description: Legacy alias of `/v1/lookup/max/{ip}`. Use the explicit path instead.
+      deprecated: true
+      parameters:
+      - name: ip
+        in: path
+        required: true
+        description: IPv4 or IPv6 address.
+        schema:
+          type: string
+        example: 8.8.8.8
+      responses:
+        '200':
+          description: A MAX record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/lookup/full:
+    post:
+      tags:
+      - Lookup
+      operationId: lookupFullAliasPost
+      summary: MAX Lookup With Context (Legacy Alias)
+      description: Legacy alias of `POST /v1/lookup/max`. Use the explicit path instead.
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupRequest'
+            example:
+              ip: 8.8.8.8
+              context:
+                note: 'checkout #4821'
+                tags:
+                - signup
+      responses:
+        '200':
+          description: A MAX record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6. `invalid_request`
+            — Malformed body, invalid context, bad batch array, or an unparseable ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/lookup/{ip}:
+    get:
+      tags:
+      - Lookup
+      operationId: lookupBareAlias
+      summary: MAX Lookup (Legacy Alias)
+      description: Legacy alias of `/v1/lookup/max/{ip}`. Use the explicit path instead.
+      deprecated: true
+      parameters:
+      - name: ip
+        in: path
+        required: true
+        description: IPv4 or IPv6 address.
+        schema:
+          type: string
+        example: 8.8.8.8
+      responses:
+        '200':
+          description: A MAX record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/lookup:
+    post:
+      tags:
+      - Lookup
+      operationId: lookupBareAliasPost
+      summary: MAX Lookup With Context (Legacy Alias)
+      description: Legacy alias of `POST /v1/lookup/max`. Use the explicit path instead.
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupRequest'
+            example:
+              ip: 8.8.8.8
+              context:
+                note: 'checkout #4821'
+                tags:
+                - signup
+      responses:
+        '200':
+          description: A MAX record, or a bogon record.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpRecord'
+              examples:
+                record:
+                  summary: A MAX record. `threats.service`, `threats.lastSeen` and `threats.recentActivityPct`
+                    are shown populated so the shape is visible; they are present only when the address
+                    is a detected anonymiser.
+                  value:
+                    ip: 8.8.8.8
+                    hostname: dns.google
+                    location:
+                      city: Mountain View
+                      region: California
+                      regionCode: CA
+                      country: United States
+                      countryCode: US
+                      continent: North America
+                      continentCode: NA
+                      latitude: 37.4056
+                      longitude: -122.0775
+                      timezone: America/Los_Angeles
+                      postalCode: '94043'
+                      dmaCode: '807'
+                      geonameId: '5375480'
+                      accuracyRadiusKm: 50
+                      geoUpdatedAt: '2026-01-04'
+                    network:
+                      asn: AS15169
+                      organization: Google LLC
+                      domain: google.com
+                      type: hosting
+                      asnUpdatedAt: '2021-05-01'
+                    threats:
+                      service: NordVPN
+                      lastSeen: '2026-05-10'
+                      recentActivityPct: 85
+                      isProxy: false
+                      isRelay: false
+                      isTor: false
+                      isVpn: false
+                      isResidentialProxy: false
+                    flags:
+                      isAnonymous: false
+                      isAnycast: true
+                      isHosting: true
+                      isMobile: false
+                      isSatellite: false
+                      isResidentialProxy: false
+                    lastUpdated: '2026-08-14T09:45:16.269Z'
+                bogon:
+                  summary: A reserved or non-routable address. Free, and no credit headers are set.
+                  value:
+                    ip: 10.0.0.1
+                    bogon: true
+        '400':
+          description: '`invalid_ip` — The supplied address is not a valid IPv4 or IPv6. `invalid_request`
+            — Malformed body, invalid context, bad batch array, or an unparseable ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_ip:
+                  summary: The supplied address is not a valid IPv4 or IPv6.
+                  value:
+                    error:
+                      code: invalid_ip
+                      message: The supplied address is not a valid IPv4 or IPv6.
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '502':
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+            `auth_failed` — MAX enrichment could not authenticate to our upstream data provider. This
+            is our credential, not yours — your key is fine and must not be discarded. Nothing is charged.
+            Back off and retry.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                auth_failed:
+                  summary: MAX enrichment could not authenticate to our upstream data provider. This is
+                    our credential, not yours — your key is fine and must not be discarded. Nothing is
+                    charged. Back off and retry.
+                  value:
+                    error:
+                      code: auth_failed
+                      message: MAX enrichment could not authenticate to our upstream data provider. This
+                        is our credential, not yours — your key is fine and must not be discarded. Nothing
+                        is charged. Back off and retry.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+        default:
+          description: '`upstream_error` — MAX enrichment failed. The status mirrors the upstream response
+            when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                upstream_error:
+                  summary: MAX enrichment failed. The status mirrors the upstream response when it sent
+                    one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+                  value:
+                    error:
+                      code: upstream_error
+                      message: MAX enrichment failed. The status mirrors the upstream response when it
+                        sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
+  /v1/batch/lite:
+    post:
+      tags:
+      - Batch
+      operationId: batchLite
+      summary: LITE Batch
+      description: Up to 100 addresses. Debited up front for the distinct resolvable addresses only —
+        malformed entries and bogons are classified out before the wallet is touched, and a repeated address
+        is charged once. If the balance cannot cover the batch the whole call is rejected with 402 and
+        nothing is served.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'
+            example:
+              ips:
+              - 8.8.8.8
+              - 1.1.1.1
+              - 2606:4700:4700::1111
+      responses:
+        '200':
+          description: An object keyed by address. Per-address failures are reported inside the object
+            and do not fail the call.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchLiteResponse'
+              examples:
+                mixed:
+                  summary: One resolved address, one bogon, and one per-address failure — the three entry
+                    shapes a caller has to handle.
+                  value:
+                    8.8.8.8:
+                      ip: 8.8.8.8
+                      location:
+                        country: United States
+                        countryCode: US
+                        continent: North America
+                        continentCode: NA
+                      network:
+                        asn: AS15169
+                        organization: Google LLC
+                        domain: google.com
+                      lastUpdated: '2026-08-14T09:45:16.269Z'
+                      datasetUpdatedAt: '2026-08-13T13:37:50.000Z'
+                    10.0.0.1:
+                      ip: 10.0.0.1
+                      bogon: true
+                    not-an-ip:
+                      error: invalid_ip
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable
+            ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`lite_db_unavailable` — LITE dataset still loading (cold start, under 30s). No
+            credit spent. `service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                lite_db_unavailable:
+                  summary: LITE dataset still loading (cold start, under 30s). No credit spent.
+                  value:
+                    error:
+                      code: lite_db_unavailable
+                      message: LITE dataset still loading (cold start, under 30s). No credit spent.
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/batch/max:
+    post:
+      tags:
+      - Batch
+      operationId: batchMax
+      summary: MAX Batch
+      description: 'Up to 100 addresses, same billing rule as the LITE batch. A per-address failure is
+        reported as `{ "error": "upstream_error" }` inside the response object and its share of the charge
+        is reversed.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'
+            example:
+              ips:
+              - 8.8.8.8
+              - 1.1.1.1
+              - 2606:4700:4700::1111
+      responses:
+        '200':
+          description: An object keyed by address. Per-address failures are reported inside the object
+            and do not fail the call.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchMaxResponse'
+              examples:
+                mixed:
+                  summary: One resolved address, one bogon, and one per-address failure — the three entry
+                    shapes a caller has to handle.
+                  value:
+                    8.8.8.8:
+                      ip: 8.8.8.8
+                      hostname: dns.google
+                      location:
+                        city: Mountain View
+                        region: California
+                        regionCode: CA
+                        country: United States
+                        countryCode: US
+                        continent: North America
+                        continentCode: NA
+                        latitude: 37.4056
+                        longitude: -122.0775
+                        timezone: America/Los_Angeles
+                        postalCode: '94043'
+                        dmaCode: '807'
+                        geonameId: '5375480'
+                        accuracyRadiusKm: 50
+                        geoUpdatedAt: '2026-01-04'
+                      network:
+                        asn: AS15169
+                        organization: Google LLC
+                        domain: google.com
+                        type: hosting
+                        asnUpdatedAt: '2021-05-01'
+                      threats:
+                        service: NordVPN
+                        lastSeen: '2026-05-10'
+                        recentActivityPct: 85
+                        isProxy: false
+                        isRelay: false
+                        isTor: false
+                        isVpn: false
+                        isResidentialProxy: false
+                      flags:
+                        isAnonymous: false
+                        isAnycast: true
+                        isHosting: true
+                        isMobile: false
+                        isSatellite: false
+                        isResidentialProxy: false
+                      lastUpdated: '2026-08-14T09:45:16.269Z'
+                    10.0.0.1:
+                      ip: 10.0.0.1
+                      bogon: true
+                    1.1.1.1:
+                      error: upstream_error
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable
+            ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/batch/full:
+    post:
+      tags:
+      - Batch
+      operationId: batchFullAlias
+      summary: MAX Batch (Legacy Alias)
+      description: Legacy alias of `POST /v1/batch/max`. Use the explicit path instead.
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'
+            example:
+              ips:
+              - 8.8.8.8
+              - 1.1.1.1
+              - 2606:4700:4700::1111
+      responses:
+        '200':
+          description: An object keyed by address. Per-address failures are reported inside the object
+            and do not fail the call.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchMaxResponse'
+              examples:
+                mixed:
+                  summary: One resolved address, one bogon, and one per-address failure — the three entry
+                    shapes a caller has to handle.
+                  value:
+                    8.8.8.8:
+                      ip: 8.8.8.8
+                      hostname: dns.google
+                      location:
+                        city: Mountain View
+                        region: California
+                        regionCode: CA
+                        country: United States
+                        countryCode: US
+                        continent: North America
+                        continentCode: NA
+                        latitude: 37.4056
+                        longitude: -122.0775
+                        timezone: America/Los_Angeles
+                        postalCode: '94043'
+                        dmaCode: '807'
+                        geonameId: '5375480'
+                        accuracyRadiusKm: 50
+                        geoUpdatedAt: '2026-01-04'
+                      network:
+                        asn: AS15169
+                        organization: Google LLC
+                        domain: google.com
+                        type: hosting
+                        asnUpdatedAt: '2021-05-01'
+                      threats:
+                        service: NordVPN
+                        lastSeen: '2026-05-10'
+                        recentActivityPct: 85
+                        isProxy: false
+                        isRelay: false
+                        isTor: false
+                        isVpn: false
+                        isResidentialProxy: false
+                      flags:
+                        isAnonymous: false
+                        isAnycast: true
+                        isHosting: true
+                        isMobile: false
+                        isSatellite: false
+                        isResidentialProxy: false
+                      lastUpdated: '2026-08-14T09:45:16.269Z'
+                    10.0.0.1:
+                      ip: 10.0.0.1
+                      bogon: true
+                    1.1.1.1:
+                      error: upstream_error
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable
+            ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/batch:
+    post:
+      tags:
+      - Batch
+      operationId: batchBareAlias
+      summary: MAX Batch (Legacy Alias)
+      description: Legacy alias of `POST /v1/batch/max`. Use the explicit path instead.
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'
+            example:
+              ips:
+              - 8.8.8.8
+              - 1.1.1.1
+              - 2606:4700:4700::1111
+      responses:
+        '200':
+          description: An object keyed by address. Per-address failures are reported inside the object
+            and do not fail the call.
+          headers:
+            X-Lookup-Kind:
+              description: Which kind was billed.
+              schema:
+                type: string
+                enum:
+                - LITE
+                - MAX
+            X-Credit-Debit-MicroUsd:
+              description: µUSD this call cost, as a decimal string. Net of any reversal.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+            X-Credit-Balance-MicroUsd:
+              description: µUSD remaining after the debit, as a decimal string.
+              schema:
+                type: string
+                pattern: ^[0-9]+$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchMaxResponse'
+              examples:
+                mixed:
+                  summary: One resolved address, one bogon, and one per-address failure — the three entry
+                    shapes a caller has to handle.
+                  value:
+                    8.8.8.8:
+                      ip: 8.8.8.8
+                      hostname: dns.google
+                      location:
+                        city: Mountain View
+                        region: California
+                        regionCode: CA
+                        country: United States
+                        countryCode: US
+                        continent: North America
+                        continentCode: NA
+                        latitude: 37.4056
+                        longitude: -122.0775
+                        timezone: America/Los_Angeles
+                        postalCode: '94043'
+                        dmaCode: '807'
+                        geonameId: '5375480'
+                        accuracyRadiusKm: 50
+                        geoUpdatedAt: '2026-01-04'
+                      network:
+                        asn: AS15169
+                        organization: Google LLC
+                        domain: google.com
+                        type: hosting
+                        asnUpdatedAt: '2021-05-01'
+                      threats:
+                        service: NordVPN
+                        lastSeen: '2026-05-10'
+                        recentActivityPct: 85
+                        isProxy: false
+                        isRelay: false
+                        isTor: false
+                        isVpn: false
+                        isResidentialProxy: false
+                      flags:
+                        isAnonymous: false
+                        isAnycast: true
+                        isHosting: true
+                        isMobile: false
+                        isSatellite: false
+                        isResidentialProxy: false
+                      lastUpdated: '2026-08-14T09:45:16.269Z'
+                    10.0.0.1:
+                      ip: 10.0.0.1
+                      bogon: true
+                    1.1.1.1:
+                      error: upstream_error
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable
+            ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '401':
+          description: '`unauthorized` — Missing, invalid, or revoked API key.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthorized:
+                  summary: Missing, invalid, or revoked API key.
+                  value:
+                    error:
+                      code: unauthorized
+                      message: Missing, invalid, or revoked API key.
+        '402':
+          description: '`insufficient_credit` — Balance too low to serve the call. Nothing was debited
+            and nothing was served. `insufficient_credit_for_max` — The balance cannot fund a MAX lookup:
+            the signup grant is spendable on LITE only. Top up to use MAX. Nothing was debited and nothing
+            was served.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsufficientCreditError'
+              examples:
+                insufficient_credit:
+                  summary: Balance too low to serve the call. Nothing was debited and nothing was served.
+                  value:
+                    error:
+                      code: insufficient_credit
+                      message: Balance too low to serve the call. Nothing was debited and nothing was
+                        served.
+                    credit:
+                      balanceMicroUsd: '420'
+                      needMicroUsd: '1300'
+                      balanceCents: 0
+                      needCents: 0
+                      kind: MAX
+                insufficient_credit_for_max:
+                  summary: 'The balance cannot fund a MAX lookup: the signup grant is spendable on LITE
+                    only. Top up to use MAX. Nothing was debited and nothing was served.'
+                  value:
+                    error:
+                      code: insufficient_credit_for_max
+                      message: 'The balance cannot fund a MAX lookup: the signup grant is spendable on
+                        LITE only. Top up to use MAX. Nothing was debited and nothing was served.'
+                    credit:
+                      balanceMicroUsd: '5000000'
+                      needMicroUsd: '1300'
+                      balanceCents: 500
+                      needCents: 0
+                      eligibleMicroUsd: '0'
+                      eligibleCents: 0
+                      kind: MAX
+        '429':
+          description: '`rate_limited` — Per-key cap of 50 requests/second exceeded, or the upstream provider
+            rate-limited a MAX lookup. No credit spent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                rate_limited:
+                  summary: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                    a MAX lookup. No credit spent.
+                  value:
+                    error:
+                      code: rate_limited
+                      message: Per-key cap of 50 requests/second exceeded, or the upstream provider rate-limited
+                        a MAX lookup. No credit spent.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/asn/{asn}:
+    get:
+      tags:
+      - ASN
+      operationId: getAsn
+      summary: ASN Record
+      description: One ASN from the public directory. No key, no credit.
+      security: []
+      parameters:
+      - name: asn
+        in: path
+        required: true
+        description: AS number, with or without the AS prefix.
+        schema:
+          type: string
+          pattern: ^(?:[Aa][Ss])?[0-9]+$
+        example: AS15169
+      responses:
+        '200':
+          description: The ASN record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsnRecord'
+              examples:
+                record:
+                  summary: One ASN from the public directory.
+                  value:
+                    asn: AS15169
+                    number: 15169
+                    name: Google LLC
+                    domain: google.com
+                    country: US
+                    prefixCount: 6079
+                    datasetVersion: '2026-08-13T13:37:50.000Z'
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable
+            ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means
+            the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                    provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream
+                        provider holds no record for the address; the charge is reversed.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+  /v1/asn:
+    get:
+      tags:
+      - ASN
+      operationId: searchAsn
+      summary: ASN Search
+      description: Search the public ASN directory by name, domain or number. No key, no credit.
+      security: []
+      parameters:
+      - name: q
+        in: query
+        required: false
+        description: Matches organisation name, domain, or AS number.
+        schema:
+          type: string
+          maxLength: 120
+      - name: country
+        in: query
+        required: false
+        description: ISO 3166-1 alpha-2 country code.
+        schema:
+          type: string
+          maxLength: 2
+      - name: limit
+        in: query
+        required: false
+        description: Maximum rows to return, 1 to 100. Anything unparseable falls back to the default.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: Matching ASN records, ordered by `prefixCount` descending — a sampled IPv4 size
+            proxy, not a count of announced prefixes; see the field description. A row here is the same
+            `AsnRecord` the single-record endpoint returns, `datasetVersion` included, so an ingest never
+            has to come back and ask how current a row was.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsnSearchResult'
+              examples:
+                results:
+                  summary: A search page. Each row is the same `AsnRecord` the single-record endpoint
+                    returns.
+                  value:
+                    items:
+                    - asn: AS15169
+                      number: 15169
+                      name: Google LLC
+                      domain: google.com
+                      country: US
+                      prefixCount: 6079
+                      datasetVersion: '2026-08-13T13:37:50.000Z'
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable
+            ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing
+            was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged.
+                    Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged.
+                        Retry after a second.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Send your key as `Authorization: Bearer <key>`. The `?token=` query parameter is no
+        longer accepted — a credential in a URL lands in access logs, browser history and the Referer
+        header, none of which can be un-sent.'
+  schemas:
+    ErrorCode:
+      type: string
+      title: ErrorCode
+      description: Every `error.code` this API can return.
+      enum:
+      - invalid_request
+      - invalid_ip
+      - unauthorized
+      - insufficient_credit
+      - insufficient_credit_for_max
+      - not_found
+      - rate_limited
+      - internal_error
+      - auth_failed
+      - upstream_error
+      - lite_db_unavailable
+      - service_busy
+    Error:
+      type: object
+      title: Error
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable detail. Do not branch on it.
+          required:
+          - code
+          - message
+      required:
+      - error
+    InsufficientCreditError:
+      type: object
+      title: InsufficientCreditError
+      description: The 402 body, which uniquely carries a `credit` object so a client can tell the operator
+        exactly how short it is. The `*MicroUsd` fields are exact strings; the `*Cents` fields are a rounded
+        convenience view and must not be used for reconciliation.
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+              - insufficient_credit
+              - insufficient_credit_for_max
+            message:
+              type: string
+          required:
+          - code
+          - message
+        credit:
+          type: object
+          properties:
+            balanceMicroUsd:
+              type: string
+              pattern: ^-?[0-9]+$
+            needMicroUsd:
+              type: string
+              pattern: ^[0-9]+$
+            balanceCents:
+              type: integer
+            needCents:
+              type: integer
+            eligibleMicroUsd:
+              type: string
+              pattern: ^[0-9]+$
+              description: 'Only on `insufficient_credit_for_max`: what the lots eligible for this kind
+                still hold. The gap between this and `balanceMicroUsd` is the LITE-only signup grant.'
+            eligibleCents:
+              type: integer
+            kind:
+              type: string
+              enum:
+              - LITE
+              - MAX
+          required:
+          - balanceMicroUsd
+          - needMicroUsd
+          - balanceCents
+          - needCents
+          - kind
+      required:
+      - error
+      - credit
+    Location:
+      type: object
+      title: Location
+      properties:
+        city:
+          type: string
+          description: City name.
+        region:
+          type: string
+          description: Region or state name.
+        regionCode:
+          type: string
+          description: Region or state code.
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+        latitude:
+          type: number
+          description: Latitude of the geolocation estimate.
+        longitude:
+          type: number
+          description: Longitude of the geolocation estimate.
+        timezone:
+          type: string
+          description: IANA timezone name.
+        postalCode:
+          type: string
+          description: Postal or ZIP code.
+        dmaCode:
+          type: string
+          description: US designated market area code.
+        geonameId:
+          type: string
+          description: GeoNames identifier for the place.
+        accuracyRadiusKm:
+          type: number
+          description: Radius in km the geolocation estimate is confident within.
+        geoUpdatedAt:
+          type: string
+          description: ISO date the geo allocation last changed.
+          format: date
+    LiteLocation:
+      type: object
+      title: LiteLocation
+      description: The four location fields the local dataset can answer.
+      properties:
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+    Network:
+      type: object
+      title: Network
+      properties:
+        asn:
+          type: string
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
+          type: string
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
+        type:
+          type: string
+          description: Network category, for example business, isp, hosting, education, government.
+        asnUpdatedAt:
+          type: string
+          description: ISO date the ASN allocation last changed.
+          format: date
+    LiteNetwork:
+      type: object
+      title: LiteNetwork
+      description: The three network fields the local dataset can answer.
+      properties:
+        asn:
+          type: string
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
+          type: string
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
+    Mobile:
+      type: object
+      title: Mobile
+      properties:
+        carrier:
+          type: string
+          description: Mobile carrier name.
+        mcc:
+          type: string
+          description: Mobile country code.
+        mnc:
+          type: string
+          description: Mobile network code.
+    Threats:
+      type: object
+      title: Threats
+      description: Anonymiser signals. A missing boolean means we hold no data on it. It does NOT mean
+        the answer is false — screen for anonymisers by treating an absent value as unknown, never as
+        a negative.
+      properties:
+        service:
+          type: string
+          description: Named anonymiser detected on the address, when there is one.
+        lastSeen:
+          type: string
+          description: ISO date the address was last seen anonymising.
+          format: date
+        recentActivityPct:
+          type: number
+          description: Share of recent days the address behaved like an anonymiser.
+          minimum: 0
+          maximum: 100
+        isProxy:
+          type: boolean
+          description: The address is a known proxy.
+        isRelay:
+          type: boolean
+          description: The address is a known private relay.
+        isTor:
+          type: boolean
+          description: The address is a known Tor node.
+        isVpn:
+          type: boolean
+          description: The address is a known VPN endpoint.
+        isResidentialProxy:
+          type: boolean
+          description: The address is a known residential proxy.
+    Flags:
+      type: object
+      title: Flags
+      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT
+        mean the answer is false — screen for anonymisers by treating an absent value as unknown, never
+        as a negative.
+      properties:
+        isAnonymous:
+          type: boolean
+          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
+        isAnycast:
+          type: boolean
+          description: The address is anycast.
+        isHosting:
+          type: boolean
+          description: The address belongs to a hosting or cloud network.
+        isMobile:
+          type: boolean
+          description: The address belongs to a mobile network.
+        isSatellite:
+          type: boolean
+          description: The address belongs to a satellite network.
+        isResidentialProxy:
+          type: boolean
+          description: The address is a known residential proxy.
+    IpRecord:
+      type: object
+      title: IpRecord
+      description: A MAX record. Every field except `ip` is optional and may be absent when there is no
+        signal; treat missing and null identically. Branch on `bogon === true` before reading `location`
+        or `network`.
+      properties:
+        ip:
+          type: string
+          description: The address this record describes.
+        hostname:
+          type: string
+          description: Reverse DNS name, when one resolves.
+        bogon:
+          type: boolean
+          description: The address is reserved or non-routable. No other field populates.
+        location:
+          $ref: '#/components/schemas/Location'
+        network:
+          $ref: '#/components/schemas/Network'
+        mobile:
+          $ref: '#/components/schemas/Mobile'
+        threats:
+          $ref: '#/components/schemas/Threats'
+        flags:
+          $ref: '#/components/schemas/Flags'
+        lastUpdated:
+          type: string
+          description: ISO-8601 time this record was last refreshed.
+          format: date-time
+        derivedFields:
+          type: array
+          items:
+            type: string
+          description: Dotted paths of fields we worked out ourselves rather than received. A field that
+            is present and NOT listed here came from upstream. Absent on most responses.
+          examples:
+          - - threats.isVpn
+      required:
+      - ip
+    LiteRecord:
+      type: object
+      title: LiteRecord
+      description: 'A LITE record. Narrower than a MAX record by design: the local dataset answers country
+        and continent, not city, and carries no threat signals.'
+      properties:
+        ip:
+          type: string
+          description: The address this record describes.
+        bogon:
+          type: boolean
+          description: The address is reserved or non-routable. No other field populates.
+        location:
+          $ref: '#/components/schemas/LiteLocation'
+        network:
+          $ref: '#/components/schemas/LiteNetwork'
+        lastUpdated:
+          type: string
+          description: ISO-8601 time this record was last refreshed.
+          format: date-time
+        datasetUpdatedAt:
+          type: string
+          format: date-time
+          description: Build time of the local dataset behind this answer, as an ISO-8601 timestamp. The
+            only field that tells you the data has gone stale.
+      required:
+      - ip
+    LookupContext:
+      type: object
+      title: LookupContext
+      description: Optional metadata attached to the lookup in your own dashboard usage log. Never forwarded
+        to any third party. Oversized or wrongly-typed values are rejected with invalid_request.
+      properties:
+        userAgent:
+          type: string
+          maxLength: 2000
+          description: Originating user-agent string of the end user.
+        email:
+          type: string
+          maxLength: 320
+          description: End-user email, for correlating the lookup in your dashboard logs.
+        username:
+          type: string
+          maxLength: 120
+          description: Your internal username or handle for the end user.
+        firstName:
+          type: string
+          maxLength: 120
+          description: End-user first name.
+        lastName:
+          type: string
+          maxLength: 120
+          description: End-user last name.
+        phone:
+          type: string
+          maxLength: 40
+          description: End-user phone number, E.164 recommended.
+        address:
+          type: string
+          maxLength: 500
+          description: Claimed street address, for checking against the IP geolocation.
+        city:
+          type: string
+          maxLength: 120
+          description: Claimed city.
+        region:
+          type: string
+          maxLength: 120
+          description: Claimed region or state.
+        country:
+          type: string
+          maxLength: 2
+          description: Claimed country, ISO 3166-1 alpha-2.
+        postal:
+          type: string
+          maxLength: 20
+          description: Claimed postal code.
+        note:
+          type: string
+          maxLength: 2000
+          description: Free-form label such as an order id or ticket number.
+        tags:
+          type: array
+          items:
+            type: string
+            maxLength: 40
+          maxItems: 20
+          description: Labels for filtering the usage log in your dashboard.
+        extra:
+          type: object
+          propertyNames:
+            maxLength: 64
+          additionalProperties:
+            oneOf:
+            - type: string
+              maxLength: 2000
+            - type: number
+            - type: boolean
+            - type: 'null'
+          description: Any other scalar metadata to attach to the log entry.
+      additionalProperties: false
+    LookupRequest:
+      type: object
+      title: LookupRequest
+      properties:
+        ip:
+          type: string
+          maxLength: 45
+          description: IPv4 or IPv6 address to look up.
+        context:
+          $ref: '#/components/schemas/LookupContext'
+      required:
+      - ip
+    BatchRequest:
+      type: object
+      title: BatchRequest
+      properties:
+        ips:
+          type: array
+          description: Addresses to look up. Duplicates collapse — the response is keyed by address —
+            and are charged once.
+          items:
+            type: string
+          minItems: 1
+          maxItems: 100
+      required:
+      - ips
+    BatchEntryError:
+      type: object
+      title: BatchEntryError
+      description: 'A per-address failure inside a batch response. Note the flat shape: `error` is a code
+        string here, not the `{ code, message }` object a whole-call error uses.'
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+      required:
+      - error
+    BatchLiteResponse:
+      type: object
+      title: BatchLiteResponse
+      description: Keyed by the address as it was sent.
+      additionalProperties:
+        oneOf:
+        - $ref: '#/components/schemas/LiteRecord'
+        - $ref: '#/components/schemas/BatchEntryError'
+    BatchMaxResponse:
+      type: object
+      title: BatchMaxResponse
+      description: Keyed by the address as it was sent.
+      additionalProperties:
+        oneOf:
+        - $ref: '#/components/schemas/IpRecord'
+        - $ref: '#/components/schemas/BatchEntryError'
+    OpenApiDocument:
+      type: object
+      title: OpenApiDocument
+      description: This document. The example beside it is the first few fields only; the served body
+        also carries the full `paths` and `components` objects.
+      properties:
+        openapi:
+          type: string
+          description: Version of the OpenAPI specification this document is written to.
+          pattern: ^3\.1\.\d+$
+        info:
+          type: object
+          description: Identity, version and contact details for the API.
+          properties:
+            title:
+              type: string
+              description: Human name of the API.
+            version:
+              type: string
+              description: Version of the API this document describes.
+            summary:
+              type: string
+              description: One-line description. An OpenAPI 3.1 field; absent in 3.0.
+            description:
+              type: string
+              description: Long-form description, in Markdown.
+            termsOfService:
+              type: string
+              description: Terms of service.
+              format: uri
+            contact:
+              type: object
+              description: Who to contact about the API.
+              properties:
+                name:
+                  type: string
+                  description: Contact name.
+                url:
+                  type: string
+                  description: Contact URL.
+                  format: uri
+                email:
+                  type: string
+                  description: Contact email address.
+          required:
+          - title
+          - version
+        externalDocs:
+          type: object
+          description: The human documentation this API is described by.
+          properties:
+            description:
+              type: string
+              description: Link text.
+            url:
+              type: string
+              description: Absolute URL.
+              format: uri
+          required:
+          - url
+        servers:
+          type: array
+          description: Base URLs the operations below are relative to.
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+                description: Absolute base URL.
+                format: uri
+              description:
+                type: string
+                description: What this server is.
+            required:
+            - url
+        security:
+          type: array
+          description: The security requirement applied to every operation that does not override it.
+          items:
+            type: object
+            description: Scheme name to required scopes.
+        tags:
+          type: array
+          description: Operation groupings, in the order a renderer should show them.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Tag name.
+              description:
+                type: string
+                description: What the group is.
+            required:
+            - name
+        paths:
+          type: object
+          description: Every operation, keyed by path template.
+          propertyNames:
+            type: string
+            pattern: ^/
+        components:
+          type: object
+          description: The reusable schemas and security schemes the operations `$ref`.
+          properties:
+            schemas:
+              type: object
+              description: Every schema a response or body `$ref`s.
+            securitySchemes:
+              type: object
+              description: How to authenticate.
+      required:
+      - openapi
+      - info
+    AsnRecord:
+      type: object
+      title: AsnRecord
+      properties:
+        asn:
+          type: string
+          description: AS number with the AS prefix.
+          examples:
+          - AS15169
+        number:
+          type: integer
+          description: AS number.
+        name:
+          type: string
+          description: Registered organisation name.
+        domain:
+          type: string
+          description: Organisation domain.
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2 country code of the registration.
+        prefixCount:
+          type: integer
+          description: 'IPv4 /24 blocks attributed to this AS by a sampled sweep of routable IPv4 space:
+            one address per /24 is probed, and the blocks that answer are counted. It is a size proxy
+            — sampled and lossy — and it is not a count of announced BGP prefixes. On large networks the
+            two differ by an order of magnitude, so do not read it as a route count.'
+        datasetVersion:
+          type: string
+          description: ISO-8601 build time of the ASN dataset.
+          format: date-time
+      required:
+      - asn
+      - number
+    AsnSearchResult:
+      type: object
+      title: AsnSearchResult
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AsnRecord'
+      required:
+      - items
+    Health:
+      type: object
+      title: Health
+      properties:
+        ok:
+          type: boolean
+          description: Liveness only. Always true on a response at all, and deliberately independent of
+            `lite` — a process with no dataset is still alive and still serves every other endpoint.
+        ts:
+          type: integer
+          description: Server time in milliseconds since the epoch.
+        lite:
+          $ref: '#/components/schemas/LiteReaderHealth'
+      required:
+      - ok
+      - ts
+      - lite
+    LiteReaderHealth:
+      type: object
+      title: LiteReaderHealth
+      description: 'Whether the process answering this request holds the Lite dataset in memory. The file
+        existing on disk is a different fact: a failed load leaves a current snapshot unread while every
+        LITE lookup answers 503.'
+      properties:
+        loaded:
+          type: boolean
+          description: False means every LITE lookup on this process is answering 503.
+        datasetUpdatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the dataset THIS process loaded was last written. Null while nothing is loaded.
+            Older than the file on disk means the process never picked up a refresh.
+      required:
+      - loaded
+      - datasetUpdatedAt
+    ServiceIndex:
+      type: object
+      title: ServiceIndex
+      properties:
+        service:
+          type: string
+        version:
+          type: string
+        docs:
+          type: string
+          format: uri
+          description: Absolute URL of the human documentation. Absolute because it is on the website,
+            not on this host.
+        openapi:
+          type: string
+          description: Path to this document.
+        endpoints:
+          type: array
+          items:
+            type: string
+      required:
+      - service
+      - version
+      - endpoints
