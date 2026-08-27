@@ -12,22 +12,94 @@ specificationVersion: '0.23'
 tags: [IP Intelligence, Geolocation, Networking, Security, Data]
 tags_raw: [ip lookup, geolocation, asn, proxy detection]
 apis:
-- aid: lookip:lookip-api
-  name: Lookip API
-  description: >-
-    IP and domain intelligence — geolocation, ASN and network, hosting and proxy signals.
-    18 operations, 24 schemas, bearer authentication.
+- aid: lookip:lookip-asn-api
+  name: Lookip ASN API
+  description: Public ASN directory. No key, no credit.
   humanURL: https://lookip.io/docs
   baseURL: https://api.lookip.io
-  tags: [IP Intelligence, Geolocation, Networking]
+  tags:
+  - ASN
   properties:
-  - {type: OpenAPI, url: openapi/lookip-api-openapi.yml}
-  - {type: APIReference, url: 'https://api.lookip.io/openapi.json'}
-  - {type: Documentation, url: 'https://lookip.io/docs'}
-  - {type: GettingStarted, url: 'https://lookip.io/docs#quick-start'}
-  - {type: Authentication, url: 'https://lookip.io/docs#authentication'}
-  - {type: ErrorCodes, url: 'https://lookip.io/docs#errors'}
-  - {type: RateLimits, url: 'https://lookip.io/docs#rate-limits'}
+  - type: OpenAPI
+    url: openapi/lookip-asn-api-openapi.yml
+  - type: APIReference
+    url: https://api.lookip.io/openapi.json
+  - type: Documentation
+    url: https://lookip.io/docs
+  - type: GettingStarted
+    url: https://lookip.io/docs#quick-start
+  - type: Authentication
+    url: https://lookip.io/docs#authentication
+  - type: ErrorCodes
+    url: https://lookip.io/docs#errors
+  - type: RateLimits
+    url: https://lookip.io/docs#rate-limits
+- aid: lookip:lookip-batch-api
+  name: Lookip Batch API
+  description: Up to 100 addresses per call.
+  humanURL: https://lookip.io/docs
+  baseURL: https://api.lookip.io
+  tags:
+  - Batch
+  properties:
+  - type: OpenAPI
+    url: openapi/lookip-batch-api-openapi.yml
+  - type: APIReference
+    url: https://api.lookip.io/openapi.json
+  - type: Documentation
+    url: https://lookip.io/docs
+  - type: GettingStarted
+    url: https://lookip.io/docs#quick-start
+  - type: Authentication
+    url: https://lookip.io/docs#authentication
+  - type: ErrorCodes
+    url: https://lookip.io/docs#errors
+  - type: RateLimits
+    url: https://lookip.io/docs#rate-limits
+- aid: lookip:lookip-lookup-api
+  name: Lookip Lookup API
+  description: Single-address lookups.
+  humanURL: https://lookip.io/docs
+  baseURL: https://api.lookip.io
+  tags:
+  - Lookup
+  properties:
+  - type: OpenAPI
+    url: openapi/lookip-lookup-api-openapi.yml
+  - type: APIReference
+    url: https://api.lookip.io/openapi.json
+  - type: Documentation
+    url: https://lookip.io/docs
+  - type: GettingStarted
+    url: https://lookip.io/docs#quick-start
+  - type: Authentication
+    url: https://lookip.io/docs#authentication
+  - type: ErrorCodes
+    url: https://lookip.io/docs#errors
+  - type: RateLimits
+    url: https://lookip.io/docs#rate-limits
+- aid: lookip:lookip-service-api
+  name: Lookip Service API
+  description: Service index, liveness and this document.
+  humanURL: https://lookip.io/docs
+  baseURL: https://api.lookip.io
+  tags:
+  - Service
+  properties:
+  - type: OpenAPI
+    url: openapi/lookip-service-api-openapi.yml
+  - type: APIReference
+    url: https://api.lookip.io/openapi.json
+  - type: Documentation
+    url: https://lookip.io/docs
+  - type: GettingStarted
+    url: https://lookip.io/docs#quick-start
+  - type: Authentication
+    url: https://lookip.io/docs#authentication
+  - type: ErrorCodes
+    url: https://lookip.io/docs#errors
+  - type: RateLimits
+    url: https://lookip.io/docs#rate-limits
 common:
 - {type: APIsJSON, url: well-known/lookip-provider-apis.json}
 - {type: LLMsTxt, url: llms/lookip-llms.txt}
