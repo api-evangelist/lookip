@@ -21,8 +21,16 @@ deliveryModel:
 created: '2026-08-26'
 modified: '2026-08-26'
 specificationVersion: '0.23'
-tags: [IP Intelligence, Geolocation, Networking, Security, Data]
-tags_raw: [ip lookup, geolocation, asn, proxy detection]
+tags:
+- ip lookup
+- geolocation
+- asn
+- proxy detection
+tags_raw:
+- ip lookup
+- geolocation
+- asn
+- proxy detection
 apis:
 - aid: lookip:lookip-asn-api
   name: Lookip ASN API
