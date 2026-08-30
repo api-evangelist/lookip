@@ -1,0 +1,326 @@
+openapi: 3.2.0
+info:
+  title: Lookip ASN API
+  version: 1.0.0
+  summary: IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.
+  description: 'IP intelligence over plain HTTP GET and POST. Two lookup kinds, chosen by URL path and never by a header or body field:
+
+
+    - **LITE** — geolocation and ASN from our local dataset. Sub-5ms p95.
+
+    - **MAX** — full enrichment: city geolocation, VPN/proxy/Tor/relay/residential-proxy detection, hosting and anycast flags, reverse DNS, mobile carrier.
+
+
+    ## Billing
+
+
+    Prepaid credit, metered per query. No plans, no subscriptions, no monthly quotas — one balance funds both kinds. Amounts are in µUSD (micro-USD); 1 USD = 1,000,000 µUSD.
+
+
+    | Kind | Per query | Per 1,000 |
+
+    |------|-----------|-----------|
+
+    | LITE | 150 µUSD | $0.15 |
+
+    | MAX | 1,300 µUSD | $1.30 |
+
+
+    Every response that debited credit carries `X-Lookup-Kind`, `X-Credit-Debit-MicroUsd` and `X-Credit-Balance-MicroUsd`. Both amounts are decimal strings holding integers that can exceed 2^53 — parse them as BigInt or int64, never as a float. Bogon and error responses carry none of the three, because nothing was charged.
+
+
+    ## Limits
+
+
+    50 requests/second per API key, shared across every authenticated endpoint and both kinds. A batch call counts as one request against the rate limit but debits for every resolvable address in it.
+
+
+    A second ceiling of 100 requests/second applies per calling address across all of `/v1`, including the public ASN endpoints. It sits in front of authentication, so it also bounds requests that carry no key or a rejected one. It is deliberately above the per-key cap and cannot be what stops a single key from reaching 50/second. Both refusals are `rate_limited` with status 429 and neither spends credit.
+
+
+    The public ASN endpoints need no key and are not metered — the ceiling above is a rate, not a charge.
+
+
+    ## Errors
+
+
+    Every error body is `{ "error": { "code", "message" } }`. Retry `rate_limited`, `lite_db_unavailable`, `service_busy`, `upstream_error`, `internal_error` and any 5xx with jittered backoff; never retry `invalid_request`, `invalid_ip`, `unauthorized`, `insufficient_credit` or `insufficient_credit_for_max`. A charge taken for a lookup we then failed to serve is reversed before the response is sent, so a retry costs one lookup and not two.
+
+
+    A longer implementation spec written for code-generating agents is at https://lookip.io/llms.txt.'
+  termsOfService: https://lookip.io/legal/terms
+  contact:
+    name: Lookip
+    url: https://lookip.io/docs
+    email: hi@lookip.io
+servers:
+- url: https://api.lookip.io
+  description: Production
+security:
+- bearerAuth: []
+tags:
+- name: ASN
+  description: Public ASN directory. No key, no credit.
+paths:
+  /v1/asn/{asn}:
+    get:
+      tags:
+      - ASN
+      operationId: getAsn
+      summary: ASN Record
+      description: One ASN from the public directory. No key, no credit.
+      security: []
+      parameters:
+      - name: asn
+        in: path
+        required: true
+        description: AS number, with or without the AS prefix.
+        schema:
+          type: string
+          pattern: ^(?:[Aa][Ss])?[0-9]+$
+        example: AS15169
+      responses:
+        '200':
+          description: The ASN record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsnRecord'
+              examples:
+                record:
+                  summary: One ASN from the public directory.
+                  value:
+                    asn: AS15169
+                    number: 15169
+                    name: Google LLC
+                    domain: google.com
+                    country: US
+                    prefixCount: 6079
+                    datasetVersion: '2026-08-13T13:37:50.000Z'
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '404':
+          description: '`not_found` — No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream provider holds no record for the address; the charge is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_found:
+                  summary: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream provider holds no record for the address; the charge is reversed.
+                  value:
+                    error:
+                      code: not_found
+                      message: No such ASN on the ASN endpoints. On a MAX lookup it also means the upstream provider holds no record for the address; the charge is reversed.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
+  /v1/asn:
+    get:
+      tags:
+      - ASN
+      operationId: searchAsn
+      summary: ASN Search
+      description: Search the public ASN directory by name, domain or number. No key, no credit.
+      security: []
+      parameters:
+      - name: q
+        in: query
+        required: false
+        description: Matches organisation name, domain, or AS number.
+        schema:
+          type: string
+          maxLength: 120
+      - name: country
+        in: query
+        required: false
+        description: ISO 3166-1 alpha-2 country code.
+        schema:
+          type: string
+          maxLength: 2
+      - name: limit
+        in: query
+        required: false
+        description: Maximum rows to return, 1 to 100. Anything unparseable falls back to the default.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: Matching ASN records, ordered by `prefixCount` descending — a sampled IPv4 size proxy, not a count of announced prefixes; see the field description. A row here is the same `AsnRecord` the single-record endpoint returns, `datasetVersion` included, so an ingest never has to come back and ask how current a row was.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsnSearchResult'
+              examples:
+                results:
+                  summary: A search page. Each row is the same `AsnRecord` the single-record endpoint returns.
+                  value:
+                    items:
+                    - asn: AS15169
+                      number: 15169
+                      name: Google LLC
+                      domain: google.com
+                      country: US
+                      prefixCount: 6079
+                      datasetVersion: '2026-08-13T13:37:50.000Z'
+        '400':
+          description: '`invalid_request` — Malformed body, invalid context, bad batch array, or an unparseable ASN.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_request:
+                  summary: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+                  value:
+                    error:
+                      code: invalid_request
+                      message: Malformed body, invalid context, bad batch array, or an unparseable ASN.
+        '500':
+          description: '`internal_error` — Unhandled server fault. Any charge already taken is reversed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                internal_error:
+                  summary: Unhandled server fault. Any charge already taken is reversed.
+                  value:
+                    error:
+                      code: internal_error
+                      message: Unhandled server fault. Any charge already taken is reversed.
+        '503':
+          description: '`service_busy` — The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                service_busy:
+                  summary: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
+                  value:
+                    error:
+                      code: service_busy
+                      message: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
+components:
+  schemas:
+    ErrorCode:
+      type: string
+      title: ErrorCode
+      description: Every `error.code` this API can return.
+      enum:
+      - invalid_request
+      - invalid_ip
+      - unauthorized
+      - insufficient_credit
+      - insufficient_credit_for_max
+      - not_found
+      - rate_limited
+      - internal_error
+      - auth_failed
+      - upstream_error
+      - lite_db_unavailable
+      - service_busy
+    AsnSearchResult:
+      type: object
+      title: AsnSearchResult
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AsnRecord'
+      required:
+      - items
+    Error:
+      type: object
+      title: Error
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable detail. Do not branch on it.
+          required:
+          - code
+          - message
+      required:
+      - error
+    AsnRecord:
+      type: object
+      title: AsnRecord
+      properties:
+        asn:
+          type: string
+          description: AS number with the AS prefix.
+          examples:
+          - AS15169
+        number:
+          type: integer
+          description: AS number.
+        name:
+          type: string
+          description: Registered organisation name.
+        domain:
+          type: string
+          description: Organisation domain.
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2 country code of the registration.
+        prefixCount:
+          type: integer
+          description: 'IPv4 /24 blocks attributed to this AS by a sampled sweep of routable IPv4 space: one address per /24 is probed, and the blocks that answer are counted. It is a size proxy — sampled and lossy — and it is not a count of announced BGP prefixes. On large networks the two differ by an order of magnitude, so do not read it as a route count.'
+        datasetVersion:
+          type: string
+          description: ISO-8601 build time of the ASN dataset.
+          format: date-time
+      required:
+      - asn
+      - number
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Send your key as `Authorization: Bearer <key>`. The `?token=` query parameter is no longer accepted — a credential in a URL lands in access logs, browser history and the Referer header, none of which can be un-sent.'
+externalDocs:
+  description: API documentation
+  url: https://lookip.io/docs

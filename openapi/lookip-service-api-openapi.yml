@@ -1,0 +1,326 @@
+openapi: 3.2.0
+info:
+  title: Lookip Service API
+  version: 1.0.0
+  summary: IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.
+  description: 'IP intelligence over plain HTTP GET and POST. Two lookup kinds, chosen by URL path and never by a header or body field:
+
+
+    - **LITE** — geolocation and ASN from our local dataset. Sub-5ms p95.
+
+    - **MAX** — full enrichment: city geolocation, VPN/proxy/Tor/relay/residential-proxy detection, hosting and anycast flags, reverse DNS, mobile carrier.
+
+
+    ## Billing
+
+
+    Prepaid credit, metered per query. No plans, no subscriptions, no monthly quotas — one balance funds both kinds. Amounts are in µUSD (micro-USD); 1 USD = 1,000,000 µUSD.
+
+
+    | Kind | Per query | Per 1,000 |
+
+    |------|-----------|-----------|
+
+    | LITE | 150 µUSD | $0.15 |
+
+    | MAX | 1,300 µUSD | $1.30 |
+
+
+    Every response that debited credit carries `X-Lookup-Kind`, `X-Credit-Debit-MicroUsd` and `X-Credit-Balance-MicroUsd`. Both amounts are decimal strings holding integers that can exceed 2^53 — parse them as BigInt or int64, never as a float. Bogon and error responses carry none of the three, because nothing was charged.
+
+
+    ## Limits
+
+
+    50 requests/second per API key, shared across every authenticated endpoint and both kinds. A batch call counts as one request against the rate limit but debits for every resolvable address in it.
+
+
+    A second ceiling of 100 requests/second applies per calling address across all of `/v1`, including the public ASN endpoints. It sits in front of authentication, so it also bounds requests that carry no key or a rejected one. It is deliberately above the per-key cap and cannot be what stops a single key from reaching 50/second. Both refusals are `rate_limited` with status 429 and neither spends credit.
+
+
+    The public ASN endpoints need no key and are not metered — the ceiling above is a rate, not a charge.
+
+
+    ## Errors
+
+
+    Every error body is `{ "error": { "code", "message" } }`. Retry `rate_limited`, `lite_db_unavailable`, `service_busy`, `upstream_error`, `internal_error` and any 5xx with jittered backoff; never retry `invalid_request`, `invalid_ip`, `unauthorized`, `insufficient_credit` or `insufficient_credit_for_max`. A charge taken for a lookup we then failed to serve is reversed before the response is sent, so a retry costs one lookup and not two.
+
+
+    A longer implementation spec written for code-generating agents is at https://lookip.io/llms.txt.'
+  termsOfService: https://lookip.io/legal/terms
+  contact:
+    name: Lookip
+    url: https://lookip.io/docs
+    email: hi@lookip.io
+servers:
+- url: https://api.lookip.io
+  description: Production
+security:
+- bearerAuth: []
+tags:
+- name: Service
+  description: Service index, liveness and this document.
+paths:
+  /:
+    get:
+      tags:
+      - Service
+      operationId: getServiceIndex
+      summary: Service Index
+      description: Service name, version, and the canonical endpoint list.
+      security: []
+      responses:
+        '200':
+          description: Service index.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceIndex'
+              examples:
+                index:
+                  summary: The service index.
+                  value:
+                    service: lookip-api
+                    version: '1.0'
+                    docs: https://lookip.io/docs
+                    openapi: /openapi.json
+                    endpoints:
+                    - /v1/lookup/lite/:ip
+                    - /v1/lookup/max/:ip
+                    - /v1/lookup/me
+                    - /v1/batch/lite
+                    - /v1/batch/max
+                    - /v1/asn/:asn
+                    - /v1/asn?q=&country=
+                    - /openapi.json
+  /health:
+    get:
+      tags:
+      - Service
+      operationId: getHealth
+      summary: Liveness Probe
+      description: 'Always 200 with `ok: true` while the process is answering. `ok` is liveness and never depends on `lite`: a process whose Lite dataset failed to load is still alive and still serves every other endpoint, and reporting that in the status code would stop a container from ever becoming healthy. When `lite.loaded` is false every LITE lookup on this process answers 503 `lite_db_unavailable`, and `lite.datasetUpdatedAt` is null.'
+      security: []
+      responses:
+        '200':
+          description: The service is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+              examples:
+                up:
+                  summary: The service is up and the Lite dataset is in memory.
+                  value:
+                    ok: true
+                    ts: 1786726485972
+                    lite:
+                      loaded: true
+                      datasetUpdatedAt: '2026-08-22T04:11:07.000Z'
+  /openapi.json:
+    get:
+      tags:
+      - Service
+      operationId: getOpenApiDocument
+      summary: OpenAPI Document
+      description: This document.
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI 3.1 description of this API.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenApiDocument'
+              examples:
+                head:
+                  summary: The first fields of this document. The real body carries `paths` and `components`.
+                  value:
+                    openapi: 3.1.1
+                    info:
+                      title: Lookip API
+                      version: 1.0.0
+                      summary: IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.
+                    servers:
+                    - url: https://api.lookip.io
+                      description: Production
+components:
+  schemas:
+    LiteReaderHealth:
+      type: object
+      title: LiteReaderHealth
+      description: 'Whether the process answering this request holds the Lite dataset in memory. The file existing on disk is a different fact: a failed load leaves a current snapshot unread while every LITE lookup answers 503.'
+      properties:
+        loaded:
+          type: boolean
+          description: False means every LITE lookup on this process is answering 503.
+        datasetUpdatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the dataset THIS process loaded was last written. Null while nothing is loaded. Older than the file on disk means the process never picked up a refresh.
+      required:
+      - loaded
+      - datasetUpdatedAt
+    OpenApiDocument:
+      type: object
+      title: OpenApiDocument
+      description: This document. The example beside it is the first few fields only; the served body also carries the full `paths` and `components` objects.
+      properties:
+        openapi:
+          type: string
+          description: Version of the OpenAPI specification this document is written to.
+          pattern: ^3\.1\.\d+$
+        info:
+          type: object
+          description: Identity, version and contact details for the API.
+          properties:
+            title:
+              type: string
+              description: Human name of the API.
+            version:
+              type: string
+              description: Version of the API this document describes.
+            summary:
+              type: string
+              description: One-line description. An OpenAPI 3.1 field; absent in 3.0.
+            description:
+              type: string
+              description: Long-form description, in Markdown.
+            termsOfService:
+              type: string
+              description: Terms of service.
+              format: uri
+            contact:
+              type: object
+              description: Who to contact about the API.
+              properties:
+                name:
+                  type: string
+                  description: Contact name.
+                url:
+                  type: string
+                  description: Contact URL.
+                  format: uri
+                email:
+                  type: string
+                  description: Contact email address.
+          required:
+          - title
+          - version
+        externalDocs:
+          type: object
+          description: The human documentation this API is described by.
+          properties:
+            description:
+              type: string
+              description: Link text.
+            url:
+              type: string
+              description: Absolute URL.
+              format: uri
+          required:
+          - url
+        servers:
+          type: array
+          description: Base URLs the operations below are relative to.
+          items:
+            type: object
+            properties:
+              url:
+                type: string
+                description: Absolute base URL.
+                format: uri
+              description:
+                type: string
+                description: What this server is.
+            required:
+            - url
+        security:
+          type: array
+          description: The security requirement applied to every operation that does not override it.
+          items:
+            type: object
+            description: Scheme name to required scopes.
+        tags:
+          type: array
+          description: Operation groupings, in the order a renderer should show them.
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Tag name.
+              description:
+                type: string
+                description: What the group is.
+            required:
+            - name
+        paths:
+          type: object
+          description: Every operation, keyed by path template.
+          propertyNames:
+            type: string
+            pattern: ^/
+        components:
+          type: object
+          description: The reusable schemas and security schemes the operations `$ref`.
+          properties:
+            schemas:
+              type: object
+              description: Every schema a response or body `$ref`s.
+            securitySchemes:
+              type: object
+              description: How to authenticate.
+      required:
+      - openapi
+      - info
+    Health:
+      type: object
+      title: Health
+      properties:
+        ok:
+          type: boolean
+          description: Liveness only. Always true on a response at all, and deliberately independent of `lite` — a process with no dataset is still alive and still serves every other endpoint.
+        ts:
+          type: integer
+          description: Server time in milliseconds since the epoch.
+        lite:
+          $ref: '#/components/schemas/LiteReaderHealth'
+      required:
+      - ok
+      - ts
+      - lite
+    ServiceIndex:
+      type: object
+      title: ServiceIndex
+      properties:
+        service:
+          type: string
+        version:
+          type: string
+        docs:
+          type: string
+          format: uri
+          description: Absolute URL of the human documentation. Absolute because it is on the website, not on this host.
+        openapi:
+          type: string
+          description: Path to this document.
+        endpoints:
+          type: array
+          items:
+            type: string
+      required:
+      - service
+      - version
+      - endpoints
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Send your key as `Authorization: Bearer <key>`. The `?token=` query parameter is no longer accepted — a credential in a URL lands in access logs, browser history and the Referer header, none of which can be un-sent.'
+externalDocs:
+  description: API documentation
+  url: https://lookip.io/docs
