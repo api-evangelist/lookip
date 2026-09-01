@@ -22,10 +22,10 @@ created: '2026-08-26'
 modified: '2026-08-26'
 specificationVersion: '0.23'
 tags:
-- ip lookup
-- geolocation
-- asn
-- proxy detection
+- IP Lookup
+- Geolocation
+- ASN
+- Proxy Detection
 tags_raw:
 - ip lookup
 - geolocation
