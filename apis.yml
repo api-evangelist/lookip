@@ -117,29 +117,6 @@ apis:
     url: https://lookip.io/docs#errors
   - type: RateLimits
     url: https://lookip.io/docs#rate-limits
-- name: Lookip API
-  description: REST/HTTP IP intelligence API with LITE and MAX lookup tiers, batch lookups, and keyless public ASN endpoints. Bearer API key auth, prepaid credit metering.
-  humanURL: https://lookip.io/docs
-  baseURL: https://api.lookip.io
-  tags:
-  - IP
-  - IP Address
-  - Geolocation
-  - ASN
-  - VPN Detection
-  - Proxy Detection
-  - Tor
-  - Hosting Detection
-  - Threat Intelligence
-  - Fraud Prevention
-  - Developer Tools
-  properties:
-  - type: OpenAPI
-    url: https://api.lookip.io/openapi.json
-  - type: LLMsTxt
-    url: https://lookip.io/llms.txt
-  - type: Documentation
-    url: https://lookip.io/docs
 common:
 - type: APIsJSON
   url: well-known/lookip-provider-apis.json
