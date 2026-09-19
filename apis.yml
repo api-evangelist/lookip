@@ -101,6 +101,8 @@ apis:
   humanURL: https://lookip.io/docs
   baseURL: https://api.lookip.io
   tags:
+  - Services
+  tags_raw:
   - Service
   properties:
   - type: OpenAPI
