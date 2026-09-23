@@ -3,51 +3,7 @@ info:
   title: Lookip Service API
   version: 1.0.0
   summary: IP geolocation, ASN and VPN/proxy/Tor/hosting detection for any IPv4 or IPv6 address — we name the anonymising service, not just flag it. Prepaid credit, metered per query, no subscription.
-  description: 'IP intelligence over plain HTTP GET and POST. Two lookup kinds, chosen by URL path and never by a header or body field:
-
-
-    - **LITE** — geolocation and ASN from our local dataset. Sub-5ms p95.
-
-    - **MAX** — full enrichment: city geolocation, VPN/proxy/Tor/relay/residential-proxy detection, hosting and anycast flags, reverse DNS, mobile carrier.
-
-
-    ## Billing
-
-
-    Prepaid credit, metered per query. No plans, no subscriptions, no monthly quotas — one balance funds both kinds. Amounts are in µUSD (micro-USD); 1 USD = 1,000,000 µUSD.
-
-
-    | Kind | Per query | Per 1,000 |
-
-    |------|-----------|-----------|
-
-    | LITE | 150 µUSD | $0.15 |
-
-    | MAX | 1,300 µUSD | $1.30 |
-
-
-    Every response that debited credit carries `X-Lookup-Kind`, `X-Credit-Debit-MicroUsd` and `X-Credit-Balance-MicroUsd`. Both amounts are decimal strings holding integers that can exceed 2^53 — parse them as BigInt or int64, never as a float. Bogon and error responses carry none of the three, because nothing was charged.
-
-
-    ## Limits
-
-
-    50 requests/second per API key, shared across every authenticated endpoint and both kinds. A batch call counts as one request against the rate limit but debits for every resolvable address in it.
-
-
-    A second ceiling of 100 requests/second applies per calling address across all of `/v1`, including the public ASN endpoints. It sits in front of authentication, so it also bounds requests that carry no key or a rejected one. It is deliberately above the per-key cap and cannot be what stops a single key from reaching 50/second. Both refusals are `rate_limited` with status 429 and neither spends credit.
-
-
-    The public ASN endpoints need no key and are not metered — the ceiling above is a rate, not a charge.
-
-
-    ## Errors
-
-
-    Every error body is `{ "error": { "code", "message" } }`. Retry `rate_limited`, `lite_db_unavailable`, `service_busy`, `upstream_error`, `internal_error` and any 5xx with jittered backoff; never retry `invalid_request`, `invalid_ip`, `unauthorized`, `insufficient_credit` or `insufficient_credit_for_max`. A charge taken for a lookup we then failed to serve is reversed before the response is sent, so a retry costs one lookup and not two.
-
-
-    A longer implementation spec written for code-generating agents is at https://lookip.io/llms.txt.'
+  description: IP intelligence over plain HTTP GET and POST.
   termsOfService: https://lookip.io/legal/terms
   contact:
     name: Lookip
@@ -147,23 +103,6 @@ paths:
                       description: Production
 components:
   schemas:
-    LiteReaderHealth:
-      type: object
-      title: LiteReaderHealth
-      description: 'Whether the process answering this request holds the Lite dataset in memory. The file existing on disk is a different fact: a failed load leaves a current snapshot unread while every LITE lookup answers 503.'
-      properties:
-        loaded:
-          type: boolean
-          description: False means every LITE lookup on this process is answering 503.
-        datasetUpdatedAt:
-          type:
-          - string
-          - 'null'
-          format: date-time
-          description: When the dataset THIS process loaded was last written. Null while nothing is loaded. Older than the file on disk means the process never picked up a refresh.
-      required:
-      - loaded
-      - datasetUpdatedAt
     OpenApiDocument:
       type: object
       title: OpenApiDocument
@@ -293,6 +232,23 @@ components:
       - ok
       - ts
       - lite
+    LiteReaderHealth:
+      type: object
+      title: LiteReaderHealth
+      description: 'Whether the process answering this request holds the Lite dataset in memory. The file existing on disk is a different fact: a failed load leaves a current snapshot unread while every LITE lookup answers 503.'
+      properties:
+        loaded:
+          type: boolean
+          description: False means every LITE lookup on this process is answering 503.
+        datasetUpdatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the dataset THIS process loaded was last written. Null while nothing is loaded. Older than the file on disk means the process never picked up a refresh.
+      required:
+      - loaded
+      - datasetUpdatedAt
     ServiceIndex:
       type: object
       title: ServiceIndex

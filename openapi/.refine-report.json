@@ -1,0 +1,28 @@
+{
+  "provider": "lookip",
+  "sources": [
+    "_original/lookip-api-openapi.yml"
+  ],
+  "outputs": [
+    "lookip-asn-api-openapi.yml",
+    "lookip-batch-api-openapi.yml",
+    "lookip-lookup-api-openapi.yml",
+    "lookip-service-api-openapi.yml"
+  ],
+  "archived": [],
+  "errors": [],
+  "warnings": [],
+  "notes": [
+    "1 archived document(s) dropped as subsets of other archived documents",
+    "sourced from openapi/_original/ (1 archived document(s)); previously refined output at the top level was skipped rather than re-split",
+    "lookip-api-openapi.yml: upgraded openapi 3.1.1 -> OpenAPI 3.2.0",
+    "apis.yml register: already-registered"
+  ],
+  "skipped": [
+    "_original/lookip-openapi.json: archived document superseded by a larger archived document",
+    "lookip-asn-api-openapi.yml: previously refined output, superseded by openapi/_original/",
+    "lookip-batch-api-openapi.yml: previously refined output, superseded by openapi/_original/",
+    "lookip-lookup-api-openapi.yml: previously refined output, superseded by openapi/_original/",
+    "lookip-service-api-openapi.yml: previously refined output, superseded by openapi/_original/"
+  ]
+}
