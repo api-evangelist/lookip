@@ -232,23 +232,6 @@ components:
       - ok
       - ts
       - lite
-    LiteReaderHealth:
-      type: object
-      title: LiteReaderHealth
-      description: 'Whether the process answering this request holds the Lite dataset in memory. The file existing on disk is a different fact: a failed load leaves a current snapshot unread while every LITE lookup answers 503.'
-      properties:
-        loaded:
-          type: boolean
-          description: False means every LITE lookup on this process is answering 503.
-        datasetUpdatedAt:
-          type:
-          - string
-          - 'null'
-          format: date-time
-          description: When the dataset THIS process loaded was last written. Null while nothing is loaded. Older than the file on disk means the process never picked up a refresh.
-      required:
-      - loaded
-      - datasetUpdatedAt
     ServiceIndex:
       type: object
       title: ServiceIndex
@@ -272,6 +255,23 @@ components:
       - service
       - version
       - endpoints
+    LiteReaderHealth:
+      type: object
+      title: LiteReaderHealth
+      description: 'Whether the process answering this request holds the Lite dataset in memory. The file existing on disk is a different fact: a failed load leaves a current snapshot unread while every LITE lookup answers 503.'
+      properties:
+        loaded:
+          type: boolean
+          description: False means every LITE lookup on this process is answering 503.
+        datasetUpdatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the dataset THIS process loaded was last written. Null while nothing is loaded. Older than the file on disk means the process never picked up a refresh.
+      required:
+      - loaded
+      - datasetUpdatedAt
   securitySchemes:
     bearerAuth:
       type: http
