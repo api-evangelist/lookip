@@ -16,14 +16,23 @@ deployment:
 tools_count: 5
 tools:
 - name: ip_lookup_lite
-  description: ''
+  description: 'Look up an IP address: country, continent, ASN and network operator. Served from our local
+    dataset, sub-5ms. Needs a free key. Example: ip="8.8.8.8" returns US, AS15169.'
 - name: ip_lookup_max
-  description: ''
+  description: 'Full IP intelligence: precise geolocation, network and ASN data, VPN / proxy / Tor / hosting
+    detection and threat data. Needs a free key. Example: ip="1.1.1.1" returns Brisbane, AU plus the privacy
+    and hosting flags.'
 - name: ip_lookup_batch
-  description: ''
+  description: 'Look up 1-100 IP addresses in one call. kind "lite" = country/ASN from our local dataset;
+    kind "max" = full intelligence. Needs a free key. Example: ips=["8.8.8.8","1.1.1.1"], kind="lite".'
 - name: asn_lookup
-  description: ''
+  description: 'Look up an autonomous system by number: name, domain, country, and prefixCount — a sampled
+    IPv4 /24 size proxy, NOT a count of announced routes. No key needed. Example: asn="AS15169" returns
+    Google LLC, google.com, US.'
 - name: asn_search
-  description: ''
+  description: 'Search the ASN directory for a network operator. No key needed. Example: q="cloudflare",
+    country="US" returns Cloudflare, Inc. as AS13335.'
 tools_source: live tools/list via initialize handshake, 2026-09-11 (signals/audit_mcp_authorship.py --probe)
 authorship: provider
+descriptions_source: live tools/list (authorship probe or saved capture); filled by backfill-tools-from-authorship.py
+  --descriptions, 2026-09-28
