@@ -197,6 +197,50 @@ paths:
                       message: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
 components:
   schemas:
+    AsnSearchResult:
+      type: object
+      title: AsnSearchResult
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AsnRecord'
+      required:
+      - items
+    ErrorCode:
+      type: string
+      title: ErrorCode
+      description: Every `error.code` this API can return.
+      enum:
+      - invalid_request
+      - invalid_ip
+      - unauthorized
+      - insufficient_credit
+      - insufficient_credit_for_max
+      - not_found
+      - rate_limited
+      - internal_error
+      - auth_failed
+      - upstream_error
+      - lite_db_unavailable
+      - service_busy
+    Error:
+      type: object
+      title: Error
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable detail. Do not branch on it.
+          required:
+          - code
+          - message
+      required:
+      - error
     AsnRecord:
       type: object
       title: AsnRecord
@@ -228,50 +272,6 @@ components:
       required:
       - asn
       - number
-    ErrorCode:
-      type: string
-      title: ErrorCode
-      description: Every `error.code` this API can return.
-      enum:
-      - invalid_request
-      - invalid_ip
-      - unauthorized
-      - insufficient_credit
-      - insufficient_credit_for_max
-      - not_found
-      - rate_limited
-      - internal_error
-      - auth_failed
-      - upstream_error
-      - lite_db_unavailable
-      - service_busy
-    AsnSearchResult:
-      type: object
-      title: AsnSearchResult
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/AsnRecord'
-      required:
-      - items
-    Error:
-      type: object
-      title: Error
-      properties:
-        error:
-          type: object
-          properties:
-            code:
-              $ref: '#/components/schemas/ErrorCode'
-            message:
-              type: string
-              description: Human-readable detail. Do not branch on it.
-          required:
-          - code
-          - message
-      required:
-      - error
   securitySchemes:
     bearerAuth:
       type: http

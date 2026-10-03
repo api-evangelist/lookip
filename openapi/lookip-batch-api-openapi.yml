@@ -753,27 +753,19 @@ paths:
                       message: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
 components:
   schemas:
-    LiteNetwork:
+    Location:
       type: object
-      title: LiteNetwork
-      description: The three network fields the local dataset can answer.
+      title: Location
       properties:
-        asn:
+        city:
           type: string
-          description: Autonomous system number, prefixed with AS.
-          examples:
-          - AS15169
-        organization:
+          description: City name.
+        region:
           type: string
-          description: Registered organisation name for the network.
-        domain:
+          description: Region or state name.
+        regionCode:
           type: string
-          description: Domain of the registered organisation.
-    LiteLocation:
-      type: object
-      title: LiteLocation
-      description: The four location fields the local dataset can answer.
-      properties:
+          description: Region or state code.
         country:
           type: string
           description: Country name.
@@ -786,6 +778,56 @@ components:
         continentCode:
           type: string
           description: Two-letter continent code.
+        latitude:
+          type: number
+          description: Latitude of the geolocation estimate.
+        longitude:
+          type: number
+          description: Longitude of the geolocation estimate.
+        timezone:
+          type: string
+          description: IANA timezone name.
+        postalCode:
+          type: string
+          description: Postal or ZIP code.
+        dmaCode:
+          type: string
+          description: US designated market area code.
+        geonameId:
+          type: string
+          description: GeoNames identifier for the place.
+        accuracyRadiusKm:
+          type: number
+          description: Radius in km the geolocation estimate is confident within.
+        geoUpdatedAt:
+          type: string
+          description: ISO date the geo allocation last changed.
+          format: date
+    BatchLiteResponse:
+      type: object
+      title: BatchLiteResponse
+      description: Keyed by the address as it was sent.
+      additionalProperties:
+        oneOf:
+        - $ref: '#/components/schemas/LiteRecord'
+        - $ref: '#/components/schemas/BatchEntryError'
+    Error:
+      type: object
+      title: Error
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable detail. Do not branch on it.
+          required:
+          - code
+          - message
+      required:
+      - error
     LiteRecord:
       type: object
       title: LiteRecord
@@ -811,6 +853,23 @@ components:
           description: Build time of the local dataset behind this answer, as an ISO-8601 timestamp. The only field that tells you the data has gone stale.
       required:
       - ip
+    ErrorCode:
+      type: string
+      title: ErrorCode
+      description: Every `error.code` this API can return.
+      enum:
+      - invalid_request
+      - invalid_ip
+      - unauthorized
+      - insufficient_credit
+      - insufficient_credit_for_max
+      - not_found
+      - rate_limited
+      - internal_error
+      - auth_failed
+      - upstream_error
+      - lite_db_unavailable
+      - service_busy
     IpRecord:
       type: object
       title: IpRecord
@@ -848,32 +907,53 @@ components:
           - - threats.isVpn
       required:
       - ip
-    BatchEntryError:
+    BatchMaxResponse:
       type: object
-      title: BatchEntryError
-      description: 'A per-address failure inside a batch response. Note the flat shape: `error` is a code string here, not the `{ code, message }` object a whole-call error uses.'
+      title: BatchMaxResponse
+      description: Keyed by the address as it was sent.
+      additionalProperties:
+        oneOf:
+        - $ref: '#/components/schemas/IpRecord'
+        - $ref: '#/components/schemas/BatchEntryError'
+    Flags:
+      type: object
+      title: Flags
+      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
       properties:
-        error:
-          $ref: '#/components/schemas/ErrorCode'
-      required:
-      - error
-    ErrorCode:
-      type: string
-      title: ErrorCode
-      description: Every `error.code` this API can return.
-      enum:
-      - invalid_request
-      - invalid_ip
-      - unauthorized
-      - insufficient_credit
-      - insufficient_credit_for_max
-      - not_found
-      - rate_limited
-      - internal_error
-      - auth_failed
-      - upstream_error
-      - lite_db_unavailable
-      - service_busy
+        isAnonymous:
+          type: boolean
+          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
+        isAnycast:
+          type: boolean
+          description: The address is anycast.
+        isHosting:
+          type: boolean
+          description: The address belongs to a hosting or cloud network.
+        isMobile:
+          type: boolean
+          description: The address belongs to a mobile network.
+        isSatellite:
+          type: boolean
+          description: The address belongs to a satellite network.
+        isResidentialProxy:
+          type: boolean
+          description: The address is a known residential proxy.
+    LiteNetwork:
+      type: object
+      title: LiteNetwork
+      description: The three network fields the local dataset can answer.
+      properties:
+        asn:
+          type: string
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
+          type: string
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
     InsufficientCreditError:
       type: object
       title: InsufficientCreditError
@@ -925,160 +1005,6 @@ components:
       required:
       - error
       - credit
-    Flags:
-      type: object
-      title: Flags
-      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
-      properties:
-        isAnonymous:
-          type: boolean
-          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
-        isAnycast:
-          type: boolean
-          description: The address is anycast.
-        isHosting:
-          type: boolean
-          description: The address belongs to a hosting or cloud network.
-        isMobile:
-          type: boolean
-          description: The address belongs to a mobile network.
-        isSatellite:
-          type: boolean
-          description: The address belongs to a satellite network.
-        isResidentialProxy:
-          type: boolean
-          description: The address is a known residential proxy.
-    Mobile:
-      type: object
-      title: Mobile
-      properties:
-        carrier:
-          type: string
-          description: Mobile carrier name.
-        mcc:
-          type: string
-          description: Mobile country code.
-        mnc:
-          type: string
-          description: Mobile network code.
-    BatchLiteResponse:
-      type: object
-      title: BatchLiteResponse
-      description: Keyed by the address as it was sent.
-      additionalProperties:
-        oneOf:
-        - $ref: '#/components/schemas/LiteRecord'
-        - $ref: '#/components/schemas/BatchEntryError'
-    Error:
-      type: object
-      title: Error
-      properties:
-        error:
-          type: object
-          properties:
-            code:
-              $ref: '#/components/schemas/ErrorCode'
-            message:
-              type: string
-              description: Human-readable detail. Do not branch on it.
-          required:
-          - code
-          - message
-      required:
-      - error
-    BatchRequest:
-      type: object
-      title: BatchRequest
-      properties:
-        ips:
-          type: array
-          description: Addresses to look up. Duplicates collapse — the response is keyed by address — and are charged once.
-          items:
-            type: string
-          minItems: 1
-          maxItems: 100
-      required:
-      - ips
-    Network:
-      type: object
-      title: Network
-      properties:
-        asn:
-          type: string
-          description: Autonomous system number, prefixed with AS.
-          examples:
-          - AS15169
-        organization:
-          type: string
-          description: Registered organisation name for the network.
-        domain:
-          type: string
-          description: Domain of the registered organisation.
-        type:
-          type: string
-          description: Network category, for example business, isp, hosting, education, government.
-        asnUpdatedAt:
-          type: string
-          description: ISO date the ASN allocation last changed.
-          format: date
-    BatchMaxResponse:
-      type: object
-      title: BatchMaxResponse
-      description: Keyed by the address as it was sent.
-      additionalProperties:
-        oneOf:
-        - $ref: '#/components/schemas/IpRecord'
-        - $ref: '#/components/schemas/BatchEntryError'
-    Location:
-      type: object
-      title: Location
-      properties:
-        city:
-          type: string
-          description: City name.
-        region:
-          type: string
-          description: Region or state name.
-        regionCode:
-          type: string
-          description: Region or state code.
-        country:
-          type: string
-          description: Country name.
-        countryCode:
-          type: string
-          description: ISO 3166-1 alpha-2 country code.
-        continent:
-          type: string
-          description: Continent name.
-        continentCode:
-          type: string
-          description: Two-letter continent code.
-        latitude:
-          type: number
-          description: Latitude of the geolocation estimate.
-        longitude:
-          type: number
-          description: Longitude of the geolocation estimate.
-        timezone:
-          type: string
-          description: IANA timezone name.
-        postalCode:
-          type: string
-          description: Postal or ZIP code.
-        dmaCode:
-          type: string
-          description: US designated market area code.
-        geonameId:
-          type: string
-          description: GeoNames identifier for the place.
-        accuracyRadiusKm:
-          type: number
-          description: Radius in km the geolocation estimate is confident within.
-        geoUpdatedAt:
-          type: string
-          description: ISO date the geo allocation last changed.
-          format: date
     Threats:
       type: object
       title: Threats
@@ -1111,6 +1037,80 @@ components:
         isResidentialProxy:
           type: boolean
           description: The address is a known residential proxy.
+    Network:
+      type: object
+      title: Network
+      properties:
+        asn:
+          type: string
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
+          type: string
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
+        type:
+          type: string
+          description: Network category, for example business, isp, hosting, education, government.
+        asnUpdatedAt:
+          type: string
+          description: ISO date the ASN allocation last changed.
+          format: date
+    LiteLocation:
+      type: object
+      title: LiteLocation
+      description: The four location fields the local dataset can answer.
+      properties:
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+    BatchRequest:
+      type: object
+      title: BatchRequest
+      properties:
+        ips:
+          type: array
+          description: Addresses to look up. Duplicates collapse — the response is keyed by address — and are charged once.
+          items:
+            type: string
+          minItems: 1
+          maxItems: 100
+      required:
+      - ips
+    Mobile:
+      type: object
+      title: Mobile
+      properties:
+        carrier:
+          type: string
+          description: Mobile carrier name.
+        mcc:
+          type: string
+          description: Mobile country code.
+        mnc:
+          type: string
+          description: Mobile network code.
+    BatchEntryError:
+      type: object
+      title: BatchEntryError
+      description: 'A per-address failure inside a batch response. Note the flat shape: `error` is a code string here, not the `{ code, message }` object a whole-call error uses.'
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+      required:
+      - error
   securitySchemes:
     bearerAuth:
       type: http

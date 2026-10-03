@@ -1989,27 +1989,19 @@ paths:
                       message: MAX enrichment failed. The status mirrors the upstream response when it sent one, so any 4xx or 5xx is possible here. The charge is reversed automatically.
 components:
   schemas:
-    LiteNetwork:
+    Location:
       type: object
-      title: LiteNetwork
-      description: The three network fields the local dataset can answer.
+      title: Location
       properties:
-        asn:
+        city:
           type: string
-          description: Autonomous system number, prefixed with AS.
-          examples:
-          - AS15169
-        organization:
+          description: City name.
+        region:
           type: string
-          description: Registered organisation name for the network.
-        domain:
+          description: Region or state name.
+        regionCode:
           type: string
-          description: Domain of the registered organisation.
-    LiteLocation:
-      type: object
-      title: LiteLocation
-      description: The four location fields the local dataset can answer.
-      properties:
+          description: Region or state code.
         country:
           type: string
           description: Country name.
@@ -2022,6 +2014,48 @@ components:
         continentCode:
           type: string
           description: Two-letter continent code.
+        latitude:
+          type: number
+          description: Latitude of the geolocation estimate.
+        longitude:
+          type: number
+          description: Longitude of the geolocation estimate.
+        timezone:
+          type: string
+          description: IANA timezone name.
+        postalCode:
+          type: string
+          description: Postal or ZIP code.
+        dmaCode:
+          type: string
+          description: US designated market area code.
+        geonameId:
+          type: string
+          description: GeoNames identifier for the place.
+        accuracyRadiusKm:
+          type: number
+          description: Radius in km the geolocation estimate is confident within.
+        geoUpdatedAt:
+          type: string
+          description: ISO date the geo allocation last changed.
+          format: date
+    Error:
+      type: object
+      title: Error
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable detail. Do not branch on it.
+          required:
+          - code
+          - message
+      required:
+      - error
     LiteRecord:
       type: object
       title: LiteRecord
@@ -2101,74 +2135,29 @@ components:
       - upstream_error
       - lite_db_unavailable
       - service_busy
-    InsufficientCreditError:
+    Flags:
       type: object
-      title: InsufficientCreditError
-      description: The 402 body, which uniquely carries a `credit` object so a client can tell the operator exactly how short it is. The `*MicroUsd` fields are exact strings; the `*Cents` fields are a rounded convenience view and must not be used for reconciliation.
+      title: Flags
+      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
       properties:
-        error:
-          type: object
-          properties:
-            code:
-              type: string
-              enum:
-              - insufficient_credit
-              - insufficient_credit_for_max
-            message:
-              type: string
-          required:
-          - code
-          - message
-        credit:
-          type: object
-          properties:
-            balanceMicroUsd:
-              type: string
-              pattern: ^-?[0-9]+$
-            needMicroUsd:
-              type: string
-              pattern: ^[0-9]+$
-            balanceCents:
-              type: integer
-            needCents:
-              type: integer
-            eligibleMicroUsd:
-              type: string
-              pattern: ^[0-9]+$
-              description: 'Only on `insufficient_credit_for_max`: what the lots eligible for this kind still hold. The gap between this and `balanceMicroUsd` is the LITE-only signup grant.'
-            eligibleCents:
-              type: integer
-            kind:
-              type: string
-              enum:
-              - LITE
-              - MAX
-          required:
-          - balanceMicroUsd
-          - needMicroUsd
-          - balanceCents
-          - needCents
-          - kind
-      required:
-      - error
-      - credit
-    Error:
-      type: object
-      title: Error
-      properties:
-        error:
-          type: object
-          properties:
-            code:
-              $ref: '#/components/schemas/ErrorCode'
-            message:
-              type: string
-              description: Human-readable detail. Do not branch on it.
-          required:
-          - code
-          - message
-      required:
-      - error
+        isAnonymous:
+          type: boolean
+          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
+        isAnycast:
+          type: boolean
+          description: The address is anycast.
+        isHosting:
+          type: boolean
+          description: The address belongs to a hosting or cloud network.
+        isMobile:
+          type: boolean
+          description: The address belongs to a mobile network.
+        isSatellite:
+          type: boolean
+          description: The address belongs to a satellite network.
+        isResidentialProxy:
+          type: boolean
+          description: The address is a known residential proxy.
     LookupContext:
       type: object
       title: LookupContext
@@ -2242,45 +2231,10 @@ components:
             - type: 'null'
           description: Any other scalar metadata to attach to the log entry.
       additionalProperties: false
-    Flags:
+    LiteNetwork:
       type: object
-      title: Flags
-      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
-      properties:
-        isAnonymous:
-          type: boolean
-          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
-        isAnycast:
-          type: boolean
-          description: The address is anycast.
-        isHosting:
-          type: boolean
-          description: The address belongs to a hosting or cloud network.
-        isMobile:
-          type: boolean
-          description: The address belongs to a mobile network.
-        isSatellite:
-          type: boolean
-          description: The address belongs to a satellite network.
-        isResidentialProxy:
-          type: boolean
-          description: The address is a known residential proxy.
-    Mobile:
-      type: object
-      title: Mobile
-      properties:
-        carrier:
-          type: string
-          description: Mobile carrier name.
-        mcc:
-          type: string
-          description: Mobile country code.
-        mnc:
-          type: string
-          description: Mobile network code.
-    Network:
-      type: object
-      title: Network
+      title: LiteNetwork
+      description: The three network fields the local dataset can answer.
       properties:
         asn:
           type: string
@@ -2293,75 +2247,57 @@ components:
         domain:
           type: string
           description: Domain of the registered organisation.
-        type:
-          type: string
-          description: Network category, for example business, isp, hosting, education, government.
-        asnUpdatedAt:
-          type: string
-          description: ISO date the ASN allocation last changed.
-          format: date
-    LookupRequest:
+    InsufficientCreditError:
       type: object
-      title: LookupRequest
+      title: InsufficientCreditError
+      description: The 402 body, which uniquely carries a `credit` object so a client can tell the operator exactly how short it is. The `*MicroUsd` fields are exact strings; the `*Cents` fields are a rounded convenience view and must not be used for reconciliation.
       properties:
-        ip:
-          type: string
-          maxLength: 45
-          description: IPv4 or IPv6 address to look up.
-        context:
-          $ref: '#/components/schemas/LookupContext'
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+              - insufficient_credit
+              - insufficient_credit_for_max
+            message:
+              type: string
+          required:
+          - code
+          - message
+        credit:
+          type: object
+          properties:
+            balanceMicroUsd:
+              type: string
+              pattern: ^-?[0-9]+$
+            needMicroUsd:
+              type: string
+              pattern: ^[0-9]+$
+            balanceCents:
+              type: integer
+            needCents:
+              type: integer
+            eligibleMicroUsd:
+              type: string
+              pattern: ^[0-9]+$
+              description: 'Only on `insufficient_credit_for_max`: what the lots eligible for this kind still hold. The gap between this and `balanceMicroUsd` is the LITE-only signup grant.'
+            eligibleCents:
+              type: integer
+            kind:
+              type: string
+              enum:
+              - LITE
+              - MAX
+          required:
+          - balanceMicroUsd
+          - needMicroUsd
+          - balanceCents
+          - needCents
+          - kind
       required:
-      - ip
-    Location:
-      type: object
-      title: Location
-      properties:
-        city:
-          type: string
-          description: City name.
-        region:
-          type: string
-          description: Region or state name.
-        regionCode:
-          type: string
-          description: Region or state code.
-        country:
-          type: string
-          description: Country name.
-        countryCode:
-          type: string
-          description: ISO 3166-1 alpha-2 country code.
-        continent:
-          type: string
-          description: Continent name.
-        continentCode:
-          type: string
-          description: Two-letter continent code.
-        latitude:
-          type: number
-          description: Latitude of the geolocation estimate.
-        longitude:
-          type: number
-          description: Longitude of the geolocation estimate.
-        timezone:
-          type: string
-          description: IANA timezone name.
-        postalCode:
-          type: string
-          description: Postal or ZIP code.
-        dmaCode:
-          type: string
-          description: US designated market area code.
-        geonameId:
-          type: string
-          description: GeoNames identifier for the place.
-        accuracyRadiusKm:
-          type: number
-          description: Radius in km the geolocation estimate is confident within.
-        geoUpdatedAt:
-          type: string
-          description: ISO date the geo allocation last changed.
-          format: date
+      - error
+      - credit
     Threats:
       type: object
       title: Threats
@@ -2394,6 +2330,70 @@ components:
         isResidentialProxy:
           type: boolean
           description: The address is a known residential proxy.
+    LookupRequest:
+      type: object
+      title: LookupRequest
+      properties:
+        ip:
+          type: string
+          maxLength: 45
+          description: IPv4 or IPv6 address to look up.
+        context:
+          $ref: '#/components/schemas/LookupContext'
+      required:
+      - ip
+    Network:
+      type: object
+      title: Network
+      properties:
+        asn:
+          type: string
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
+          type: string
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
+        type:
+          type: string
+          description: Network category, for example business, isp, hosting, education, government.
+        asnUpdatedAt:
+          type: string
+          description: ISO date the ASN allocation last changed.
+          format: date
+    LiteLocation:
+      type: object
+      title: LiteLocation
+      description: The four location fields the local dataset can answer.
+      properties:
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+    Mobile:
+      type: object
+      title: Mobile
+      properties:
+        carrier:
+          type: string
+          description: Mobile carrier name.
+        mcc:
+          type: string
+          description: Mobile country code.
+        mnc:
+          type: string
+          description: Mobile network code.
   securitySchemes:
     bearerAuth:
       type: http
