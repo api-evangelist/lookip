@@ -753,64 +753,6 @@ paths:
                       message: The database was briefly unable to start a transaction. Nothing was charged. Retry after a second.
 components:
   schemas:
-    Location:
-      type: object
-      title: Location
-      properties:
-        city:
-          type: string
-          description: City name.
-        region:
-          type: string
-          description: Region or state name.
-        regionCode:
-          type: string
-          description: Region or state code.
-        country:
-          type: string
-          description: Country name.
-        countryCode:
-          type: string
-          description: ISO 3166-1 alpha-2 country code.
-        continent:
-          type: string
-          description: Continent name.
-        continentCode:
-          type: string
-          description: Two-letter continent code.
-        latitude:
-          type: number
-          description: Latitude of the geolocation estimate.
-        longitude:
-          type: number
-          description: Longitude of the geolocation estimate.
-        timezone:
-          type: string
-          description: IANA timezone name.
-        postalCode:
-          type: string
-          description: Postal or ZIP code.
-        dmaCode:
-          type: string
-          description: US designated market area code.
-        geonameId:
-          type: string
-          description: GeoNames identifier for the place.
-        accuracyRadiusKm:
-          type: number
-          description: Radius in km the geolocation estimate is confident within.
-        geoUpdatedAt:
-          type: string
-          description: ISO date the geo allocation last changed.
-          format: date
-    BatchLiteResponse:
-      type: object
-      title: BatchLiteResponse
-      description: Keyed by the address as it was sent.
-      additionalProperties:
-        oneOf:
-        - $ref: '#/components/schemas/LiteRecord'
-        - $ref: '#/components/schemas/BatchEntryError'
     Error:
       type: object
       title: Error
@@ -828,31 +770,38 @@ components:
           - message
       required:
       - error
-    LiteRecord:
+    Threats:
       type: object
-      title: LiteRecord
-      description: 'A LITE record. Narrower than a MAX record by design: the local dataset answers country and continent, not city, and carries no threat signals.'
+      title: Threats
+      description: Anonymiser signals. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
       properties:
-        ip:
+        service:
           type: string
-          description: The address this record describes.
-        bogon:
+          description: Named anonymiser detected on the address, when there is one.
+        lastSeen:
+          type: string
+          description: ISO date the address was last seen anonymising.
+          format: date
+        recentActivityPct:
+          type: number
+          description: Share of recent days the address behaved like an anonymiser.
+          minimum: 0
+          maximum: 100
+        isProxy:
           type: boolean
-          description: The address is reserved or non-routable. No other field populates.
-        location:
-          $ref: '#/components/schemas/LiteLocation'
-        network:
-          $ref: '#/components/schemas/LiteNetwork'
-        lastUpdated:
-          type: string
-          description: ISO-8601 time this record was last refreshed.
-          format: date-time
-        datasetUpdatedAt:
-          type: string
-          format: date-time
-          description: Build time of the local dataset behind this answer, as an ISO-8601 timestamp. The only field that tells you the data has gone stale.
-      required:
-      - ip
+          description: The address is a known proxy.
+        isRelay:
+          type: boolean
+          description: The address is a known private relay.
+        isTor:
+          type: boolean
+          description: The address is a known Tor node.
+        isVpn:
+          type: boolean
+          description: The address is a known VPN endpoint.
+        isResidentialProxy:
+          type: boolean
+          description: The address is a known residential proxy.
     ErrorCode:
       type: string
       title: ErrorCode
@@ -870,51 +819,19 @@ components:
       - upstream_error
       - lite_db_unavailable
       - service_busy
-    IpRecord:
+    Mobile:
       type: object
-      title: IpRecord
-      description: A MAX record. Every field except `ip` is optional and may be absent when there is no signal; treat missing and null identically. Branch on `bogon === true` before reading `location` or `network`.
+      title: Mobile
       properties:
-        ip:
+        carrier:
           type: string
-          description: The address this record describes.
-        hostname:
+          description: Mobile carrier name.
+        mcc:
           type: string
-          description: Reverse DNS name, when one resolves.
-        bogon:
-          type: boolean
-          description: The address is reserved or non-routable. No other field populates.
-        location:
-          $ref: '#/components/schemas/Location'
-        network:
-          $ref: '#/components/schemas/Network'
-        mobile:
-          $ref: '#/components/schemas/Mobile'
-        threats:
-          $ref: '#/components/schemas/Threats'
-        flags:
-          $ref: '#/components/schemas/Flags'
-        lastUpdated:
+          description: Mobile country code.
+        mnc:
           type: string
-          description: ISO-8601 time this record was last refreshed.
-          format: date-time
-        derivedFields:
-          type: array
-          items:
-            type: string
-          description: Dotted paths of fields we worked out ourselves rather than received. A field that is present and NOT listed here came from upstream. Absent on most responses.
-          examples:
-          - - threats.isVpn
-      required:
-      - ip
-    BatchMaxResponse:
-      type: object
-      title: BatchMaxResponse
-      description: Keyed by the address as it was sent.
-      additionalProperties:
-        oneOf:
-        - $ref: '#/components/schemas/IpRecord'
-        - $ref: '#/components/schemas/BatchEntryError'
+          description: Mobile network code.
     Flags:
       type: object
       title: Flags
@@ -938,22 +855,6 @@ components:
         isResidentialProxy:
           type: boolean
           description: The address is a known residential proxy.
-    LiteNetwork:
-      type: object
-      title: LiteNetwork
-      description: The three network fields the local dataset can answer.
-      properties:
-        asn:
-          type: string
-          description: Autonomous system number, prefixed with AS.
-          examples:
-          - AS15169
-        organization:
-          type: string
-          description: Registered organisation name for the network.
-        domain:
-          type: string
-          description: Domain of the registered organisation.
     InsufficientCreditError:
       type: object
       title: InsufficientCreditError
@@ -1005,38 +906,47 @@ components:
       required:
       - error
       - credit
-    Threats:
+    LiteNetwork:
       type: object
-      title: Threats
-      description: Anonymiser signals. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
+      title: LiteNetwork
+      description: The three network fields the local dataset can answer.
       properties:
-        service:
+        asn:
           type: string
-          description: Named anonymiser detected on the address, when there is one.
-        lastSeen:
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
           type: string
-          description: ISO date the address was last seen anonymising.
-          format: date
-        recentActivityPct:
-          type: number
-          description: Share of recent days the address behaved like an anonymiser.
-          minimum: 0
-          maximum: 100
-        isProxy:
-          type: boolean
-          description: The address is a known proxy.
-        isRelay:
-          type: boolean
-          description: The address is a known private relay.
-        isTor:
-          type: boolean
-          description: The address is a known Tor node.
-        isVpn:
-          type: boolean
-          description: The address is a known VPN endpoint.
-        isResidentialProxy:
-          type: boolean
-          description: The address is a known residential proxy.
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
+    LiteLocation:
+      type: object
+      title: LiteLocation
+      description: The four location fields the local dataset can answer.
+      properties:
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+    BatchMaxResponse:
+      type: object
+      title: BatchMaxResponse
+      description: Keyed by the address as it was sent.
+      additionalProperties:
+        oneOf:
+        - $ref: '#/components/schemas/IpRecord'
+        - $ref: '#/components/schemas/BatchEntryError'
     Network:
       type: object
       title: Network
@@ -1059,11 +969,19 @@ components:
           type: string
           description: ISO date the ASN allocation last changed.
           format: date
-    LiteLocation:
+    Location:
       type: object
-      title: LiteLocation
-      description: The four location fields the local dataset can answer.
+      title: Location
       properties:
+        city:
+          type: string
+          description: City name.
+        region:
+          type: string
+          description: Region or state name.
+        regionCode:
+          type: string
+          description: Region or state code.
         country:
           type: string
           description: Country name.
@@ -1076,6 +994,110 @@ components:
         continentCode:
           type: string
           description: Two-letter continent code.
+        latitude:
+          type: number
+          description: Latitude of the geolocation estimate.
+        longitude:
+          type: number
+          description: Longitude of the geolocation estimate.
+        timezone:
+          type: string
+          description: IANA timezone name.
+        postalCode:
+          type: string
+          description: Postal or ZIP code.
+        dmaCode:
+          type: string
+          description: US designated market area code.
+        geonameId:
+          type: string
+          description: GeoNames identifier for the place.
+        accuracyRadiusKm:
+          type: number
+          description: Radius in km the geolocation estimate is confident within.
+        geoUpdatedAt:
+          type: string
+          description: ISO date the geo allocation last changed.
+          format: date
+    BatchEntryError:
+      type: object
+      title: BatchEntryError
+      description: 'A per-address failure inside a batch response. Note the flat shape: `error` is a code string here, not the `{ code, message }` object a whole-call error uses.'
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+      required:
+      - error
+    IpRecord:
+      type: object
+      title: IpRecord
+      description: A MAX record. Every field except `ip` is optional and may be absent when there is no signal; treat missing and null identically. Branch on `bogon === true` before reading `location` or `network`.
+      properties:
+        ip:
+          type: string
+          description: The address this record describes.
+        hostname:
+          type: string
+          description: Reverse DNS name, when one resolves.
+        bogon:
+          type: boolean
+          description: The address is reserved or non-routable. No other field populates.
+        location:
+          $ref: '#/components/schemas/Location'
+        network:
+          $ref: '#/components/schemas/Network'
+        mobile:
+          $ref: '#/components/schemas/Mobile'
+        threats:
+          $ref: '#/components/schemas/Threats'
+        flags:
+          $ref: '#/components/schemas/Flags'
+        lastUpdated:
+          type: string
+          description: ISO-8601 time this record was last refreshed.
+          format: date-time
+        derivedFields:
+          type: array
+          items:
+            type: string
+          description: Dotted paths of fields we worked out ourselves rather than received. A field that is present and NOT listed here came from upstream. Absent on most responses.
+          examples:
+          - - threats.isVpn
+      required:
+      - ip
+    LiteRecord:
+      type: object
+      title: LiteRecord
+      description: 'A LITE record. Narrower than a MAX record by design: the local dataset answers country and continent, not city, and carries no threat signals.'
+      properties:
+        ip:
+          type: string
+          description: The address this record describes.
+        bogon:
+          type: boolean
+          description: The address is reserved or non-routable. No other field populates.
+        location:
+          $ref: '#/components/schemas/LiteLocation'
+        network:
+          $ref: '#/components/schemas/LiteNetwork'
+        lastUpdated:
+          type: string
+          description: ISO-8601 time this record was last refreshed.
+          format: date-time
+        datasetUpdatedAt:
+          type: string
+          format: date-time
+          description: Build time of the local dataset behind this answer, as an ISO-8601 timestamp. The only field that tells you the data has gone stale.
+      required:
+      - ip
+    BatchLiteResponse:
+      type: object
+      title: BatchLiteResponse
+      description: Keyed by the address as it was sent.
+      additionalProperties:
+        oneOf:
+        - $ref: '#/components/schemas/LiteRecord'
+        - $ref: '#/components/schemas/BatchEntryError'
     BatchRequest:
       type: object
       title: BatchRequest
@@ -1089,28 +1111,6 @@ components:
           maxItems: 100
       required:
       - ips
-    Mobile:
-      type: object
-      title: Mobile
-      properties:
-        carrier:
-          type: string
-          description: Mobile carrier name.
-        mcc:
-          type: string
-          description: Mobile country code.
-        mnc:
-          type: string
-          description: Mobile network code.
-    BatchEntryError:
-      type: object
-      title: BatchEntryError
-      description: 'A per-address failure inside a batch response. Note the flat shape: `error` is a code string here, not the `{ code, message }` object a whole-call error uses.'
-      properties:
-        error:
-          $ref: '#/components/schemas/ErrorCode'
-      required:
-      - error
   securitySchemes:
     bearerAuth:
       type: http
