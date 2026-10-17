@@ -2006,6 +2006,35 @@ components:
           - message
       required:
       - error
+    LookupRequest:
+      type: object
+      title: LookupRequest
+      properties:
+        ip:
+          type: string
+          maxLength: 45
+          description: IPv4 or IPv6 address to look up.
+        context:
+          $ref: '#/components/schemas/LookupContext'
+      required:
+      - ip
+    ErrorCode:
+      type: string
+      title: ErrorCode
+      description: Every `error.code` this API can return.
+      enum:
+      - invalid_request
+      - invalid_ip
+      - unauthorized
+      - insufficient_credit
+      - insufficient_credit_for_max
+      - not_found
+      - rate_limited
+      - internal_error
+      - auth_failed
+      - upstream_error
+      - lite_db_unavailable
+      - service_busy
     Threats:
       type: object
       title: Threats
@@ -2038,75 +2067,6 @@ components:
         isResidentialProxy:
           type: boolean
           description: The address is a known residential proxy.
-    Flags:
-      type: object
-      title: Flags
-      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
-      properties:
-        isAnonymous:
-          type: boolean
-          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
-        isAnycast:
-          type: boolean
-          description: The address is anycast.
-        isHosting:
-          type: boolean
-          description: The address belongs to a hosting or cloud network.
-        isMobile:
-          type: boolean
-          description: The address belongs to a mobile network.
-        isSatellite:
-          type: boolean
-          description: The address belongs to a satellite network.
-        isResidentialProxy:
-          type: boolean
-          description: The address is a known residential proxy.
-    Mobile:
-      type: object
-      title: Mobile
-      properties:
-        carrier:
-          type: string
-          description: Mobile carrier name.
-        mcc:
-          type: string
-          description: Mobile country code.
-        mnc:
-          type: string
-          description: Mobile network code.
-    ErrorCode:
-      type: string
-      title: ErrorCode
-      description: Every `error.code` this API can return.
-      enum:
-      - invalid_request
-      - invalid_ip
-      - unauthorized
-      - insufficient_credit
-      - insufficient_credit_for_max
-      - not_found
-      - rate_limited
-      - internal_error
-      - auth_failed
-      - upstream_error
-      - lite_db_unavailable
-      - service_busy
-    LiteNetwork:
-      type: object
-      title: LiteNetwork
-      description: The three network fields the local dataset can answer.
-      properties:
-        asn:
-          type: string
-          description: Autonomous system number, prefixed with AS.
-          examples:
-          - AS15169
-        organization:
-          type: string
-          description: Registered organisation name for the network.
-        domain:
-          type: string
-          description: Domain of the registered organisation.
     Network:
       type: object
       title: Network
@@ -2129,183 +2089,6 @@ components:
           type: string
           description: ISO date the ASN allocation last changed.
           format: date
-    LookupContext:
-      type: object
-      title: LookupContext
-      description: Optional metadata attached to the lookup in your own dashboard usage log. Never forwarded to any third party. Oversized or wrongly-typed values are rejected with invalid_request.
-      properties:
-        userAgent:
-          type: string
-          maxLength: 2000
-          description: Originating user-agent string of the end user.
-        email:
-          type: string
-          maxLength: 320
-          description: End-user email, for correlating the lookup in your dashboard logs.
-        username:
-          type: string
-          maxLength: 120
-          description: Your internal username or handle for the end user.
-        firstName:
-          type: string
-          maxLength: 120
-          description: End-user first name.
-        lastName:
-          type: string
-          maxLength: 120
-          description: End-user last name.
-        phone:
-          type: string
-          maxLength: 40
-          description: End-user phone number, E.164 recommended.
-        address:
-          type: string
-          maxLength: 500
-          description: Claimed street address, for checking against the IP geolocation.
-        city:
-          type: string
-          maxLength: 120
-          description: Claimed city.
-        region:
-          type: string
-          maxLength: 120
-          description: Claimed region or state.
-        country:
-          type: string
-          maxLength: 2
-          description: Claimed country, ISO 3166-1 alpha-2.
-        postal:
-          type: string
-          maxLength: 20
-          description: Claimed postal code.
-        note:
-          type: string
-          maxLength: 2000
-          description: Free-form label such as an order id or ticket number.
-        tags:
-          type: array
-          items:
-            type: string
-            maxLength: 40
-          maxItems: 20
-          description: Labels for filtering the usage log in your dashboard.
-        extra:
-          type: object
-          propertyNames:
-            maxLength: 64
-          additionalProperties:
-            oneOf:
-            - type: string
-              maxLength: 2000
-            - type: number
-            - type: boolean
-            - type: 'null'
-          description: Any other scalar metadata to attach to the log entry.
-      additionalProperties: false
-    LiteLocation:
-      type: object
-      title: LiteLocation
-      description: The four location fields the local dataset can answer.
-      properties:
-        country:
-          type: string
-          description: Country name.
-        countryCode:
-          type: string
-          description: ISO 3166-1 alpha-2 country code.
-        continent:
-          type: string
-          description: Continent name.
-        continentCode:
-          type: string
-          description: Two-letter continent code.
-    Location:
-      type: object
-      title: Location
-      properties:
-        city:
-          type: string
-          description: City name.
-        region:
-          type: string
-          description: Region or state name.
-        regionCode:
-          type: string
-          description: Region or state code.
-        country:
-          type: string
-          description: Country name.
-        countryCode:
-          type: string
-          description: ISO 3166-1 alpha-2 country code.
-        continent:
-          type: string
-          description: Continent name.
-        continentCode:
-          type: string
-          description: Two-letter continent code.
-        latitude:
-          type: number
-          description: Latitude of the geolocation estimate.
-        longitude:
-          type: number
-          description: Longitude of the geolocation estimate.
-        timezone:
-          type: string
-          description: IANA timezone name.
-        postalCode:
-          type: string
-          description: Postal or ZIP code.
-        dmaCode:
-          type: string
-          description: US designated market area code.
-        geonameId:
-          type: string
-          description: GeoNames identifier for the place.
-        accuracyRadiusKm:
-          type: number
-          description: Radius in km the geolocation estimate is confident within.
-        geoUpdatedAt:
-          type: string
-          description: ISO date the geo allocation last changed.
-          format: date
-    LiteRecord:
-      type: object
-      title: LiteRecord
-      description: 'A LITE record. Narrower than a MAX record by design: the local dataset answers country and continent, not city, and carries no threat signals.'
-      properties:
-        ip:
-          type: string
-          description: The address this record describes.
-        bogon:
-          type: boolean
-          description: The address is reserved or non-routable. No other field populates.
-        location:
-          $ref: '#/components/schemas/LiteLocation'
-        network:
-          $ref: '#/components/schemas/LiteNetwork'
-        lastUpdated:
-          type: string
-          description: ISO-8601 time this record was last refreshed.
-          format: date-time
-        datasetUpdatedAt:
-          type: string
-          format: date-time
-          description: Build time of the local dataset behind this answer, as an ISO-8601 timestamp. The only field that tells you the data has gone stale.
-      required:
-      - ip
-    LookupRequest:
-      type: object
-      title: LookupRequest
-      properties:
-        ip:
-          type: string
-          maxLength: 45
-          description: IPv4 or IPv6 address to look up.
-        context:
-          $ref: '#/components/schemas/LookupContext'
-      required:
-      - ip
     InsufficientCreditError:
       type: object
       title: InsufficientCreditError
@@ -2394,6 +2177,223 @@ components:
           - - threats.isVpn
       required:
       - ip
+    LookupContext:
+      type: object
+      title: LookupContext
+      description: Optional metadata attached to the lookup in your own dashboard usage log. Never forwarded to any third party. Oversized or wrongly-typed values are rejected with invalid_request.
+      properties:
+        userAgent:
+          type: string
+          maxLength: 2000
+          description: Originating user-agent string of the end user.
+        email:
+          type: string
+          maxLength: 320
+          description: End-user email, for correlating the lookup in your dashboard logs.
+        username:
+          type: string
+          maxLength: 120
+          description: Your internal username or handle for the end user.
+        firstName:
+          type: string
+          maxLength: 120
+          description: End-user first name.
+        lastName:
+          type: string
+          maxLength: 120
+          description: End-user last name.
+        phone:
+          type: string
+          maxLength: 40
+          description: End-user phone number, E.164 recommended.
+        address:
+          type: string
+          maxLength: 500
+          description: Claimed street address, for checking against the IP geolocation.
+        city:
+          type: string
+          maxLength: 120
+          description: Claimed city.
+        region:
+          type: string
+          maxLength: 120
+          description: Claimed region or state.
+        country:
+          type: string
+          maxLength: 2
+          description: Claimed country, ISO 3166-1 alpha-2.
+        postal:
+          type: string
+          maxLength: 20
+          description: Claimed postal code.
+        note:
+          type: string
+          maxLength: 2000
+          description: Free-form label such as an order id or ticket number.
+        tags:
+          type: array
+          items:
+            type: string
+            maxLength: 40
+          maxItems: 20
+          description: Labels for filtering the usage log in your dashboard.
+        extra:
+          type: object
+          propertyNames:
+            maxLength: 64
+          additionalProperties:
+            oneOf:
+            - type: string
+              maxLength: 2000
+            - type: number
+            - type: boolean
+            - type: 'null'
+          description: Any other scalar metadata to attach to the log entry.
+      additionalProperties: false
+    Flags:
+      type: object
+      title: Flags
+      description: Cheap network booleans. A missing boolean means we hold no data on it. It does NOT mean the answer is false — screen for anonymisers by treating an absent value as unknown, never as a negative.
+      properties:
+        isAnonymous:
+          type: boolean
+          description: Any anonymising signal is set. Deduced from the booleans upstream sent.
+        isAnycast:
+          type: boolean
+          description: The address is anycast.
+        isHosting:
+          type: boolean
+          description: The address belongs to a hosting or cloud network.
+        isMobile:
+          type: boolean
+          description: The address belongs to a mobile network.
+        isSatellite:
+          type: boolean
+          description: The address belongs to a satellite network.
+        isResidentialProxy:
+          type: boolean
+          description: The address is a known residential proxy.
+    Location:
+      type: object
+      title: Location
+      properties:
+        city:
+          type: string
+          description: City name.
+        region:
+          type: string
+          description: Region or state name.
+        regionCode:
+          type: string
+          description: Region or state code.
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+        latitude:
+          type: number
+          description: Latitude of the geolocation estimate.
+        longitude:
+          type: number
+          description: Longitude of the geolocation estimate.
+        timezone:
+          type: string
+          description: IANA timezone name.
+        postalCode:
+          type: string
+          description: Postal or ZIP code.
+        dmaCode:
+          type: string
+          description: US designated market area code.
+        geonameId:
+          type: string
+          description: GeoNames identifier for the place.
+        accuracyRadiusKm:
+          type: number
+          description: Radius in km the geolocation estimate is confident within.
+        geoUpdatedAt:
+          type: string
+          description: ISO date the geo allocation last changed.
+          format: date
+    LiteRecord:
+      type: object
+      title: LiteRecord
+      description: 'A LITE record. Narrower than a MAX record by design: the local dataset answers country and continent, not city, and carries no threat signals.'
+      properties:
+        ip:
+          type: string
+          description: The address this record describes.
+        bogon:
+          type: boolean
+          description: The address is reserved or non-routable. No other field populates.
+        location:
+          $ref: '#/components/schemas/LiteLocation'
+        network:
+          $ref: '#/components/schemas/LiteNetwork'
+        lastUpdated:
+          type: string
+          description: ISO-8601 time this record was last refreshed.
+          format: date-time
+        datasetUpdatedAt:
+          type: string
+          format: date-time
+          description: Build time of the local dataset behind this answer, as an ISO-8601 timestamp. The only field that tells you the data has gone stale.
+      required:
+      - ip
+    LiteLocation:
+      type: object
+      title: LiteLocation
+      description: The four location fields the local dataset can answer.
+      properties:
+        country:
+          type: string
+          description: Country name.
+        countryCode:
+          type: string
+          description: ISO 3166-1 alpha-2 country code.
+        continent:
+          type: string
+          description: Continent name.
+        continentCode:
+          type: string
+          description: Two-letter continent code.
+    Mobile:
+      type: object
+      title: Mobile
+      properties:
+        carrier:
+          type: string
+          description: Mobile carrier name.
+        mcc:
+          type: string
+          description: Mobile country code.
+        mnc:
+          type: string
+          description: Mobile network code.
+    LiteNetwork:
+      type: object
+      title: LiteNetwork
+      description: The three network fields the local dataset can answer.
+      properties:
+        asn:
+          type: string
+          description: Autonomous system number, prefixed with AS.
+          examples:
+          - AS15169
+        organization:
+          type: string
+          description: Registered organisation name for the network.
+        domain:
+          type: string
+          description: Domain of the registered organisation.
   securitySchemes:
     bearerAuth:
       type: http

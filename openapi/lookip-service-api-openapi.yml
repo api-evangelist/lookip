@@ -103,22 +103,6 @@ paths:
                       description: Production
 components:
   schemas:
-    Health:
-      type: object
-      title: Health
-      properties:
-        ok:
-          type: boolean
-          description: Liveness only. Always true on a response at all, and deliberately independent of `lite` — a process with no dataset is still alive and still serves every other endpoint.
-        ts:
-          type: integer
-          description: Server time in milliseconds since the epoch.
-        lite:
-          $ref: '#/components/schemas/LiteReaderHealth'
-      required:
-      - ok
-      - ts
-      - lite
     OpenApiDocument:
       type: object
       title: OpenApiDocument
@@ -232,6 +216,22 @@ components:
       required:
       - openapi
       - info
+    Health:
+      type: object
+      title: Health
+      properties:
+        ok:
+          type: boolean
+          description: Liveness only. Always true on a response at all, and deliberately independent of `lite` — a process with no dataset is still alive and still serves every other endpoint.
+        ts:
+          type: integer
+          description: Server time in milliseconds since the epoch.
+        lite:
+          $ref: '#/components/schemas/LiteReaderHealth'
+      required:
+      - ok
+      - ts
+      - lite
     ServiceIndex:
       type: object
       title: ServiceIndex
