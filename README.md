@@ -1,4 +1,4 @@
-# lookip
+# Lookip
 
 <!-- API-EVANGELIST-PROVENANCE:BEGIN -->
 > ### About this repository
@@ -63,3 +63,91 @@
 >
 > Full detail: **[Where this data comes from](https://apievangelist.com/about/where-our-data-comes-from)**
 <!-- API-EVANGELIST-PROVENANCE:END -->
+
+Lookip is an IP and domain intelligence API — geolocation, network and ASN, hosting and proxy detection, and related lookups over a single authenticated surface. The contract is an OpenAPI 3.1.1 document of 18 paths and 24 schemas served from api.lookip.io with bearer authentication.
+
+**Areas:** IP Lookup · Geolocation · ASN · Proxy Detection
+
+## Lookip on APIs.io
+
+Everything profiled for Lookip is published on APIs.io rather than in this repository. Start at the provider page — **[apis.io/providers/lookip/](https://apis.io/providers/lookip/)** — or go straight to one of the APIs or properties below.
+
+### APIs (4)
+
+- [Lookip ASN API](https://apis.io/apis/lookip/lookip-asn-api/) — Public ASN directory. No key, no credit.
+- [Lookip Batch API](https://apis.io/apis/lookip/lookip-batch-api/) — Up to 100 addresses per call.
+- [Lookip Lookup API](https://apis.io/apis/lookip/lookip-lookup-api/) — Single-address lookups.
+- [Lookip Service API](https://apis.io/apis/lookip/lookip-service-api/) — Service index, liveness and this document.
+
+### Published properties
+
+Each property below is a page on APIs.io carrying the machine-readable artifact and what it says.
+
+#### MCP servers (1)
+
+Model Context Protocol servers that expose the API to agents.
+
+- [lookip](https://apis.io/servers/lookip/lookip/)
+
+## Where to find this API
+
+Links to the company's own pages. This repository publishes no copy of their specifications — the canonical document is theirs and lives at the URLs below.
+
+- [Website](https://lookip.io)
+- [Terms of service](https://lookip.io/legal/terms)
+- [Privacy policy](https://lookip.io/legal/privacy)
+
+## API Evangelist rating
+
+**Kin Score 33.3** — thin · rubric 0.25.0 · scored 2026-10-23
+
+| Facet | Score |
+|---|---|
+| Discoverability | 63.3 |
+| Contract quality | 51.7 |
+| Contract governance | 0.0 |
+| Operational transparency | 0.0 |
+| Developer ergonomics | 40.5 |
+| Access clarity | 34.2 |
+
+**Agent readiness 40.4** — agent-ready (gated down from agent-native)
+
+| Agent-readiness dimension | Result |
+|---|---|
+| Spec Presence | yes |
+| Agentic Access | — |
+| Reversibility Documented | documented (partial credit) |
+| MCP Server | verified |
+| Auth Clarity | bearer (partial credit) |
+| Idempotency | — |
+| Error Semantics | verified |
+| OpenAPI Examples | verified |
+| Rate Limit Signal | documented (partial credit) |
+| Event Surface Described | — |
+| Agent Skills | — |
+| Well Known Catalog | — |
+| Consent Identity | — |
+| Agent Card | — |
+| Dry Run Mode | — |
+| Delegated Identity | — |
+| Protected Resource Metadata | — |
+| Dynamic Client Registration | — |
+| Agentic Commerce | — |
+| Pagination Ratio | paginated |
+| Operation Distinctiveness | — |
+
+**Regulatory alignment 13.7** — Horizontal (data, software, accessibility, platform)
+
+The rubric is published at [github.com/api-evangelist/kin-score](https://github.com/api-evangelist/kin-score). The per-check breakdown behind these numbers — which checks were earned, partial or missed — along with score history and how this provider compares to its peers, is available at [apis.io/providers/lookip/](https://apis.io/providers/lookip/).
+
+## How this profile is made
+
+API Evangelist profiles a company's public API surface the way a developer would find it: the website, developer portal and documentation, the specifications it publishes, its public repositories, and its pricing, status and changelog pages. From that it derives the properties above — contracts split per API, workflows, schemas, collections, governance rules, plans and rate limits — and scores them against the published [Kin Score rubric](https://github.com/api-evangelist/kin-score).
+
+The artifacts are published on [APIs.io](https://apis.io), not in this repository. This repository is the public record for Lookip: the place to say something is wrong, missing or out of date, and to ask for a re-score or a removal.
+
+## Open an issue
+
+- **Something about this listing** — a wrong description, a missing API, a stale artifact or a question about the rating: [open an issue on this repository](https://github.com/api-evangelist/lookip/issues/new).
+- **A new API, or one that is not in the catalog yet** — [submit it on APIs.io](https://apis.io/add/).
+- **Anything else** — [the APIs.io inbox](https://github.com/api-search/inbox/issues/new) or [info@apievangelist.com](mailto:info@apievangelist.com).
